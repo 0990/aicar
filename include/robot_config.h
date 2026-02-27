@@ -32,4 +32,12 @@ static constexpr uint16_t HTTP_PORT = 80;
 static constexpr const char *HTTP_TOKEN = ""; // optional shared secret from header X-Robot-Token
 static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 
+// 0.96" OLED (SSD1306 over I2C: VCC/GND/SCL/SDA).
+// Update pins based on your board wiring.
+static constexpr bool OLED_ENABLED = true;
+static constexpr uint8_t OLED_SDA_PIN = 6;
+static constexpr uint8_t OLED_SCL_PIN = 7;
+static constexpr uint8_t OLED_I2C_ADDRESS = 0x3C;
+static constexpr uint16_t MAX_EXPRESSION_HOLD_MS = 30000;
+
 } // namespace robot
