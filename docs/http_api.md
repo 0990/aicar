@@ -1,119 +1,138 @@
-# Robot HTTP API (ESP32 + OLED Expressions)
+# Robot HTTP API (ESP32 + RoboEyes)
 
-Base URL: `http://<robot_ip>:<port>`  
-Default port: `80` (`HTTP_PORT` in `include/robot_config.h`).
+Base URL: `http://<robot_ip>:<port>`
 
-Optional auth:
+- 默认端口：`80`（见 `include/robot_config.h` 的 `HTTP_PORT`）
+- 可选鉴权：请求头 `X-Robot-Token: <token>` 或 query `token=<token>`
+- 所有响应均为 JSON
 
-- Header: `X-Robot-Token: <token>`
-- Or query: `?token=<token>`
-
-All responses are JSON.
-
-## Health and State
+## 1. Health / State
 
 - `GET /health`
-- `GET /api/state`
+- `ANY /api/state`
 
-State response example:
+示例响应：
 
 ```json
 {
   "ok": true,
   "ip": "192.168.1.88",
-  "motion": "FORWARD",
-  "expression_mode": "PARAM",
-  "expression": "PARAM",
-  "expression_param": {
-    "openness": 74,
-    "gaze_x": -4,
-    "gaze_y": 1,
-    "brow_tilt": 18,
-    "brow_lift": 3,
-    "pupil": 3,
-    "left_open": 74,
-    "right_open": 74,
-    "auto_blink": true
-  },
+  "motion": "STOP",
   "default_speed": 180,
+  "expression_engine": "ROBOEYES",
+  "expression": "NEUTRAL",
+  "expression_last_action": "NONE",
+  "expression_style": {
+    "mood": "DEFAULT",
+    "position": "DEFAULT",
+    "curiosity": false,
+    "sweat": false,
+    "cyclops": false,
+    "auto_blink": true,
+    "auto_blink_interval": 3,
+    "auto_blink_variation": 2,
+    "idle": false,
+    "idle_interval": 2,
+    "idle_variation": 2,
+    "hflicker_amp": 0,
+    "vflicker_amp": 0
+  },
+  "oled_ready": true,
   "uptime_ms": 123456
 }
 ```
 
-## Ping
+## 2. Ping
 
-- `POST /ping`
+- `ANY /ping`
 
-## Movement
+## 3. Movement
 
-- `POST /api/move`
-- Query params:
-  - `direction`: `FORWARD|BACKWARD|LEFT|RIGHT|STOP`
-  - `duration_ms` (optional): `1..10000`
-  - `speed` (optional): `0..255`
-  - `expression` (optional): preset expression name
-  - `expression_hold_ms` (optional): hold/revert duration
-  - Parametric expression options (optional):
-    - `openness` (`0..100`)
-    - `gaze_x` (`-10..10`)
-    - `gaze_y` (`-8..8`)
-    - `brow_tilt` (`-35..35`)
-    - `brow_lift` (`-12..12`)
-    - `pupil` (`1..8`)
-    - `left_open` (`0..100`)
-    - `right_open` (`0..100`)
-    - `auto_blink` (`0|1|true|false`)
-- Alternative:
-  - `command=FORWARD 800 180`
+- `ANY /api/move`
 
-Example:
+参数：
+
+- `direction`: `FORWARD|BACKWARD|LEFT|RIGHT|STOP`
+- `duration_ms`: 可选，`1..10000`
+- `speed`: 可选，`0..255`
+- `expression`: 可选，预设表情
+- `expression_hold_ms`: 可选，临时表情保持时长
+- 或 `command`: 可选，原始命令（如 `FORWARD 800 180`）
+- 还可带 RoboEyes 参数，字段同 `api/expression/param`
+
+示例：
 
 ```bash
-curl -X POST "http://192.168.1.88/api/move?direction=FORWARD&duration_ms=800&speed=180&openness=86&gaze_x=-3&brow_tilt=16&pupil=3"
+curl -X POST "http://192.168.1.88/api/move?direction=FORWARD&duration_ms=900&speed=180&mood=HAPPY&action=BLINK"
 ```
 
-## Text Intent
+## 4. Text Intent
 
-- `POST /api/text`
-- Query params:
-  - `text` (required)
-  - `duration_ms` (optional)
-  - `speed` (optional)
-  - `expression` (optional)
-  - `expression_hold_ms` (optional)
-  - Any parametric expression option listed above
+- `ANY /api/text`
 
-Example:
+参数：
+
+- `text`: 必填
+- `duration_ms`: 可选
+- `speed`: 可选
+- `expression`: 可选
+- `expression_hold_ms`: 可选
+- 还可带 RoboEyes 参数，字段同 `api/expression/param`
+
+示例：
 
 ```bash
-curl -X POST --get "http://192.168.1.88/api/text" --data-urlencode "text=向左转并且开心一点" --data "openness=85" --data "gaze_x=-3"
+curl -X POST --get "http://192.168.1.88/api/text" --data-urlencode "text=向左转并且开心一点" --data "mood=HAPPY" --data "position=W"
 ```
 
-## Preset Expression
+## 5. Preset Expression
 
-- `POST /api/expression`
-- Query params:
-  - `name`: `NEUTRAL|HAPPY|SAD|ANGRY|SLEEPY|SURPRISED|LOOK_LEFT|LOOK_RIGHT|WINK_LEFT|WINK_RIGHT|BLINK`
-  - `hold_ms` (optional)
+- `ANY /api/expression`
 
-## Parametric Expression (AI-Generated)
+参数：
 
-- `POST /api/expression/param`
-- Query params:
-  - At least one param field is required:
-    - `openness`, `gaze_x`, `gaze_y`, `brow_tilt`, `brow_lift`, `pupil`, `left_open`, `right_open`, `auto_blink`
-  - `hold_ms` (optional)
+- `name`: `NEUTRAL|HAPPY|SAD|ANGRY|SLEEPY|SURPRISED|LOOK_LEFT|LOOK_RIGHT|WINK_LEFT|WINK_RIGHT|BLINK|CONFUSED|LAUGH`
+- `hold_ms`: 可选，`1..30000`
 
-Example:
+示例：
 
 ```bash
-curl -X POST "http://192.168.1.88/api/expression/param?openness=72&gaze_x=5&gaze_y=-1&brow_tilt=-12&brow_lift=-2&pupil=4&auto_blink=1"
+curl -X POST "http://192.168.1.88/api/expression?name=CONFUSED&hold_ms=1500"
 ```
 
-## Stop / Speed / Raw
+## 6. RoboEyes Parameter Expression
 
-- `POST /api/stop`
-- `POST /api/speed?speed=200`
-- `POST /api/raw?command=FORWARD%20800%20180`
-- `POST /api/raw?command=EXPR%20HAPPY`
+- `ANY /api/expression/param`
 
+参数：
+
+- 至少一个参数必填
+- `mood`: `DEFAULT|TIRED|ANGRY|HAPPY`
+- `position`: `DEFAULT|CENTER|C|N|NE|E|SE|S|SW|W|NW`
+- `curiosity`: `0|1|true|false`
+- `sweat`: `0|1|true|false`
+- `cyclops`: `0|1|true|false`
+- `auto_blink`: `0|1|true|false`
+- `auto_blink_interval`: `1..30`
+- `auto_blink_variation`: `0..30`
+- `idle`: `0|1|true|false`
+- `idle_interval`: `1..30`
+- `idle_variation`: `0..30`
+- `hflicker_amp`: `0..30`
+- `vflicker_amp`: `0..30`
+- `action`: `NONE|BLINK|WINK_LEFT|WINK_RIGHT|CONFUSED|LAUGH|OPEN|CLOSE`
+- `hold_ms`: 可选，`1..30000`
+
+示例：
+
+```bash
+curl -X POST "http://192.168.1.88/api/expression/param?mood=ANGRY&position=NE&curiosity=1&auto_blink=1&hflicker_amp=2&action=BLINK"
+```
+
+## 7. Stop / Speed / Raw
+
+- `ANY /api/stop`
+- `ANY /api/speed?speed=200`
+- `ANY /api/raw?command=FORWARD%20800%20180`
+- `ANY /api/raw?command=EXPR%20HAPPY`
+- `ANY /api/raw?command=ACTION%20CONFUSED`
