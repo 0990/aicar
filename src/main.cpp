@@ -63,14 +63,14 @@ struct StyleParamResult {
 class MotorDriver {
 public:
   void begin() {
-    ledcSetup(robot::LEFT_IN1_CH, robot::PWM_FREQ_HZ, robot::PWM_RES_BITS);
-    ledcSetup(robot::LEFT_IN2_CH, robot::PWM_FREQ_HZ, robot::PWM_RES_BITS);
-    ledcSetup(robot::RIGHT_IN1_CH, robot::PWM_FREQ_HZ, robot::PWM_RES_BITS);
-    ledcSetup(robot::RIGHT_IN2_CH, robot::PWM_FREQ_HZ, robot::PWM_RES_BITS);
-    ledcAttachPin(robot::LEFT_IN1_PIN, robot::LEFT_IN1_CH);
-    ledcAttachPin(robot::LEFT_IN2_PIN, robot::LEFT_IN2_CH);
-    ledcAttachPin(robot::RIGHT_IN1_PIN, robot::RIGHT_IN1_CH);
-    ledcAttachPin(robot::RIGHT_IN2_PIN, robot::RIGHT_IN2_CH);
+    ledcSetup(kLeftIn1Channel, kPwmFreqHz, kPwmResBits);
+    ledcSetup(kLeftIn2Channel, kPwmFreqHz, kPwmResBits);
+    ledcSetup(kRightIn1Channel, kPwmFreqHz, kPwmResBits);
+    ledcSetup(kRightIn2Channel, kPwmFreqHz, kPwmResBits);
+    ledcAttachPin(robot::LEFT_IN1_PIN, kLeftIn1Channel);
+    ledcAttachPin(robot::LEFT_IN2_PIN, kLeftIn2Channel);
+    ledcAttachPin(robot::RIGHT_IN1_PIN, kRightIn1Channel);
+    ledcAttachPin(robot::RIGHT_IN2_PIN, kRightIn2Channel);
     stop();
   }
 
@@ -98,6 +98,13 @@ public:
   void stop() { driveDifferential(0, 0); }
 
 private:
+  static constexpr uint8_t kLeftIn1Channel = 0;
+  static constexpr uint8_t kLeftIn2Channel = 1;
+  static constexpr uint8_t kRightIn1Channel = 2;
+  static constexpr uint8_t kRightIn2Channel = 3;
+  static constexpr uint32_t kPwmFreqHz = 20000;
+  static constexpr uint8_t kPwmResBits = 8;
+
   static void writeMotor(uint8_t forwardChannel, uint8_t reverseChannel, int16_t signedSpeed) {
     const uint8_t duty = static_cast<uint8_t>(constrain(abs(signedSpeed), 0, 255));
     if (signedSpeed > 0) {
@@ -115,8 +122,8 @@ private:
   }
 
   static void driveDifferential(int16_t left, int16_t right) {
-    writeMotor(robot::LEFT_IN1_CH, robot::LEFT_IN2_CH, left);
-    writeMotor(robot::RIGHT_IN1_CH, robot::RIGHT_IN2_CH, right);
+    writeMotor(kLeftIn1Channel, kLeftIn2Channel, left);
+    writeMotor(kRightIn1Channel, kRightIn2Channel, right);
   }
 };
 

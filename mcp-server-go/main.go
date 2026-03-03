@@ -20,14 +20,14 @@ import (
 )
 
 const (
-	defaultMQTTBroker  = "tcp://broker.emqx.io:1883"
+	defaultMQTTBroker  = "tcp://10.229.1.186:1883"
 	defaultTopicPrefix = "aicar"
 	defaultCmdTimeout  = 8 * time.Second
 	defaultConnectWait = 8 * time.Second
 	defaultStaleAfter  = 20 * time.Second
 	defaultServerName  = "aicar-robot-mcp-mqtt"
 	defaultServerVer   = "0.4.0"
-	defaultHTTPAddr    = ":8080"
+	defaultHTTPAddr    = ":8081"
 	defaultHTTPEndp    = "/mcp"
 )
 
