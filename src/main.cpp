@@ -1517,94 +1517,6 @@ bool executeCommandFromJson(const String &typeInput, const JsonVariantConst &arg
                   g_eyePresetName + "\",\"expression_last_action\":\"" + g_lastEyeAction + "\"}";
     return true;
   }
-  if (type == "TEXT") {
-    String text;
-    if (!readJsonStringArg(args, "text", &text)) {
-      if (errorOut != nullptr) {
-        *errorOut = "missing text";
-      }
-      return false;
-    }
-
-    Command cmd{};
-    const bool hasMotion = parseVoiceText(text, &cmd);
-
-    StyleParamResult styleParams{};
-    String parseError;
-    if (!parseStyleParamsFromJson(argsVariant, &styleParams, &parseError)) {
-      if (errorOut != nullptr) {
-        *errorOut = parseError.length() > 0 ? parseError : String("bad expression param");
-      }
-      return false;
-    }
-
-    PresetResolveResult preset{};
-    bool hasPreset = false;
-    String expression;
-    if (readJsonStringArg(args, "expression", &expression)) {
-      hasPreset = resolvePreset(expression, &preset);
-      if (!hasPreset) {
-        if (errorOut != nullptr) {
-          *errorOut = "bad expression";
-        }
-        return false;
-      }
-    }
-
-    if (!hasMotion && !hasPreset && !styleParams.changed && !styleParams.hasAction) {
-      if (errorOut != nullptr) {
-        *errorOut = "text parse failed";
-      }
-      return false;
-    }
-
-    if (hasMotion) {
-      bool hasDuration = false;
-      uint32_t durationMs = 0;
-      if (!readJsonUIntArg(args, "duration_ms", 1, robot::MAX_MOVE_MS, &hasDuration, &durationMs)) {
-        if (errorOut != nullptr) {
-          *errorOut = "bad duration_ms";
-        }
-        return false;
-      }
-      if (hasDuration && cmd.motion != Motion::Stop) {
-        cmd.durationMs = durationMs;
-      }
-
-      bool hasSpeed = false;
-      uint8_t speed = g_defaultSpeed;
-      if (!readJsonU8Arg(args, "speed", 0, 255, &hasSpeed, &speed)) {
-        if (errorOut != nullptr) {
-          *errorOut = "bad speed";
-        }
-        return false;
-      }
-      if (hasSpeed) {
-        cmd.speed = speed;
-      }
-
-      applyCommand(cmd);
-    }
-
-    uint32_t holdMs = 0;
-    bool hasHold = false;
-    if (!readJsonUIntArg(args, "expression_hold_ms", 1, robot::MAX_EXPRESSION_HOLD_MS, &hasHold,
-                         &holdMs)) {
-      if (errorOut != nullptr) {
-        *errorOut = "bad expression_hold_ms";
-      }
-      return false;
-    }
-    applyExpressionFromRequest(styleParams, hasPreset, preset, hasHold ? holdMs : 0,
-                               hasMotion ? cmd.durationMs : 0);
-
-    *resultJson = "{\"ok\":true,\"motion\":\"" + String(hasMotion ? motionName(cmd.motion) : "NONE") +
-                  "\",\"duration_ms\":" + String(hasMotion ? cmd.durationMs : 0) + ",\"speed\":" +
-                  String(hasMotion ? cmd.speed : g_defaultSpeed) + ",\"expression\":\"" + g_eyePresetName +
-                  "\",\"expression_last_action\":\"" + g_lastEyeAction + "\"}";
-    return true;
-  }
-
   if (errorOut != nullptr) {
     *errorOut = "unknown command type";
   }
@@ -1735,71 +1647,6 @@ void handleMove() {
   json += String(cmd.durationMs);
   json += ",\"speed\":";
   json += String(cmd.speed);
-  json += ",\"expression\":\"";
-  json += g_eyePresetName;
-  json += "\",\"expression_last_action\":\"";
-  json += g_lastEyeAction;
-  json += "\"}";
-  sendJson(200, json);
-}
-
-void handleText() {
-  if (!isAuthorized()) {
-    sendJson(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
-    return;
-  }
-  if (!g_server.hasArg("text")) {
-    sendJson(400, "{\"ok\":false,\"error\":\"missing text\"}");
-    return;
-  }
-
-  const String text = g_server.arg("text");
-  Command cmd{};
-  const bool hasMotion = parseVoiceText(text, &cmd);
-
-  StyleParamResult styleParams{};
-  if (!parseStyleParamsFromArgs(&styleParams)) {
-    sendJson(400, "{\"ok\":false,\"error\":\"bad expression param\"}");
-    return;
-  }
-
-  PresetResolveResult preset{};
-  bool hasPreset = false;
-  if (g_server.hasArg("expression")) {
-    hasPreset = resolvePreset(g_server.arg("expression"), &preset);
-    if (!hasPreset) {
-      sendJson(400, "{\"ok\":false,\"error\":\"bad expression\"}");
-      return;
-    }
-  }
-
-  if (!hasMotion && !hasPreset && !styleParams.changed && !styleParams.hasAction) {
-    sendJson(400, "{\"ok\":false,\"error\":\"text parse failed\"}");
-    return;
-  }
-
-  if (hasMotion) {
-    if (cmd.motion != Motion::Stop && g_server.hasArg("duration_ms")) {
-      parseDuration(g_server.arg("duration_ms"), &cmd.durationMs);
-    }
-    if (g_server.hasArg("speed")) {
-      parseSpeed(g_server.arg("speed"), &cmd.speed);
-    }
-    applyCommand(cmd);
-  }
-
-  uint32_t holdMs = 0;
-  if (g_server.hasArg("expression_hold_ms")) {
-    parseHoldMs(g_server.arg("expression_hold_ms"), &holdMs);
-  }
-  applyExpressionFromRequest(styleParams, hasPreset, preset, holdMs, hasMotion ? cmd.durationMs : 0);
-
-  String json = "{\"ok\":true,\"motion\":\"";
-  json += hasMotion ? motionName(cmd.motion) : String("NONE");
-  json += "\",\"duration_ms\":";
-  json += hasMotion ? String(cmd.durationMs) : String(0);
-  json += ",\"speed\":";
-  json += hasMotion ? String(cmd.speed) : String(g_defaultSpeed);
   json += ",\"expression\":\"";
   json += g_eyePresetName;
   json += "\",\"expression_last_action\":\"";
@@ -2033,7 +1880,7 @@ void publishMqttRegister() {
   payload += g_mqttTopicCommand;
   payload += "\",\"mqtt_ack_topic\":\"";
   payload += g_mqttTopicAck;
-  payload += "\",\"features\":[\"move\",\"text\",\"expression\",\"expression_param\",\"raw\",\"state\"]}";
+  payload += "\",\"features\":[\"move\",\"expression\",\"expression_param\",\"raw\",\"state\"]}";
   publishMqtt(g_mqttTopicRegister, payload, true);
 }
 
@@ -2148,7 +1995,6 @@ void startHttpServer() {
   g_server.on("/ping", HTTP_ANY, handlePing);
   g_server.on("/api/state", HTTP_ANY, handleState);
   g_server.on("/api/move", HTTP_ANY, handleMove);
-  g_server.on("/api/text", HTTP_ANY, handleText);
   g_server.on("/api/expression", HTTP_ANY, handleExpression);
   g_server.on("/api/expression/param", HTTP_ANY, handleExpressionParam);
   g_server.on("/api/stop", HTTP_ANY, handleStop);
@@ -2239,7 +2085,6 @@ void setup() {
   Serial.println("  ANY  /api/expression?name=CONFUSED");
   Serial.println(
       "  ANY  /api/expression/param?mood=ANGRY&position=NE&curiosity=1&hflicker_amp=2&action=BLINK");
-  Serial.println("  ANY  /api/text?text=向左转并且开心一点");
   Serial.println("  ANY  /api/stop");
   Serial.println("  ANY  /api/speed?speed=200");
   Serial.println("  ANY  /api/raw?command=EXPR%20HAPPY");

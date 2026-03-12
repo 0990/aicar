@@ -125,7 +125,6 @@ go run .
 - `robot_move`
 - `robot_expression`
 - `robot_expression_param`
-- `robot_text_control`
 - `robot_ai_behavior`
 - `robot_speed`
 - `robot_send_raw`

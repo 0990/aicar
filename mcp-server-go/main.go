@@ -869,63 +869,6 @@ func main() {
 	)
 
 	mcpServer.AddTool(
-		mcp.NewTool("robot_text_control",
-			mcp.WithDescription("Send text intent to robot via MQTT"),
-			mcp.WithString("robot_id", mcp.Description("Optional target robot id")),
-			mcp.WithString("text", mcp.Required(), mcp.Description("Natural text")),
-			mcp.WithNumber("duration_ms", mcp.Description("Optional duration override")),
-			mcp.WithNumber("speed", mcp.Description("Optional speed override")),
-			mcp.WithString("expression", mcp.Description("Optional expression override")),
-			mcp.WithNumber("expression_hold_ms", mcp.Description("Optional expression hold")),
-			mcp.WithString("mood", mcp.Description("DEFAULT/TIRED/ANGRY/HAPPY")),
-			mcp.WithString("position", mcp.Description("DEFAULT/N/NE/E/SE/S/SW/W/NW")),
-			mcp.WithNumber("curiosity", mcp.Description("0 or 1")),
-			mcp.WithNumber("sweat", mcp.Description("0 or 1")),
-			mcp.WithNumber("cyclops", mcp.Description("0 or 1")),
-			mcp.WithNumber("auto_blink", mcp.Description("0 or 1")),
-			mcp.WithNumber("auto_blink_interval", mcp.Description("1..30")),
-			mcp.WithNumber("auto_blink_variation", mcp.Description("0..30")),
-			mcp.WithNumber("idle", mcp.Description("0 or 1")),
-			mcp.WithNumber("idle_interval", mcp.Description("1..30")),
-			mcp.WithNumber("idle_variation", mcp.Description("0..30")),
-			mcp.WithNumber("hflicker_amp", mcp.Description("0..30")),
-			mcp.WithNumber("vflicker_amp", mcp.Description("0..30")),
-			mcp.WithString("action", mcp.Description("NONE/BLINK/WINK_LEFT/WINK_RIGHT/CONFUSED/LAUGH/OPEN/CLOSE")),
-		),
-		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			text, err := request.RequireString("text")
-			if err != nil {
-				return mcp.NewToolResultText("invalid text: " + err.Error()), nil
-			}
-			args := request.GetArguments()
-			cmd := map[string]any{"text": text}
-			if duration, ok := intArg(args, "duration_ms"); ok && duration > 0 {
-				cmd["duration_ms"] = duration
-			}
-			if speed, ok := intArg(args, "speed"); ok {
-				if speed < 0 || speed > 255 {
-					return mcp.NewToolResultText("speed must be 0..255"), nil
-				}
-				cmd["speed"] = speed
-			}
-			if raw := maybeStringArg(args, "expression"); raw != "" {
-				expr, ok := normalizeExpression(raw)
-				if !ok {
-					return mcp.NewToolResultText("invalid expression"), nil
-				}
-				cmd["expression"] = expr
-			}
-			if hold, ok := intArg(args, "expression_hold_ms"); ok && hold > 0 {
-				cmd["expression_hold_ms"] = hold
-			}
-			if _, err := addExpressionArgs(cmd, args); err != nil {
-				return mcp.NewToolResultText("invalid expression params: " + err.Error()), nil
-			}
-			return mcp.NewToolResultText(callRobotCommand(bridge, args, "text", cmd)), nil
-		},
-	)
-
-	mcpServer.AddTool(
 		mcp.NewTool("robot_ai_behavior",
 			mcp.WithDescription("Parse natural text in MCP and dispatch MQTT robot commands"),
 			mcp.WithString("robot_id", mcp.Description("Optional target robot id")),
