@@ -44,6 +44,16 @@ Base URL: `http://<robot_ip>:<port>`
     "vflicker_amp": 0
   },
   "oled_ready": true,
+  "buzzer": {
+    "enabled": true,
+    "playing": false,
+    "current_freq": 0,
+    "priority": "NORMAL",
+    "repeat_total": 0,
+    "repeat_remaining": 0,
+    "pattern_length": 0,
+    "step_index": 0
+  },
   "uptime_ms": 123456
 }
 ```
@@ -73,7 +83,33 @@ Base URL: `http://<robot_ip>:<port>`
 curl -X POST "http://192.168.1.88/api/wheels?left_direction=FORWARD&left_speed=100&right_direction=FORWARD&right_speed=100&mood=HAPPY&action=BLINK"
 ```
 
-## 4. Preset Expression
+## 4. Buzzer
+
+- `ANY /api/buzzer`
+
+参数：
+
+- `pattern`: 必填，JSON 数组字符串，例如 `[{"freq":880,"duration_ms":120},{"freq":0,"duration_ms":50}]`
+- `repeat`: 可选，`1..10`
+- `interrupt`: 可选，`true|false|1|0`
+- `priority`: 可选，`LOW|NORMAL|HIGH|ALARM`
+
+字段说明：
+
+- `freq`: 频率，单位 Hz
+- `freq=0`: 静音 / 停顿
+- `duration_ms`: 当前 step 持续时间
+- `repeat`: 整组 pattern 重复次数
+- `interrupt`: 是否打断当前正在播放的声音
+- `priority`: 优先级，低优先级不能覆盖更高优先级声音
+
+示例：
+
+```bash
+curl -X POST "http://192.168.1.88/api/buzzer?pattern=%5B%7B%22freq%22%3A880%2C%22duration_ms%22%3A120%7D%2C%7B%22freq%22%3A1320%2C%22duration_ms%22%3A80%7D%2C%7B%22freq%22%3A1040%2C%22duration_ms%22%3A100%7D%2C%7B%22freq%22%3A0%2C%22duration_ms%22%3A50%7D%2C%7B%22freq%22%3A1560%2C%22duration_ms%22%3A140%7D%5D&repeat=1&interrupt=true&priority=NORMAL"
+```
+
+## 5. Preset Expression
 
 - `ANY /api/expression`
 
@@ -88,7 +124,7 @@ curl -X POST "http://192.168.1.88/api/wheels?left_direction=FORWARD&left_speed=1
 curl -X POST "http://192.168.1.88/api/expression?name=CONFUSED&hold_ms=1500"
 ```
 
-## 5. RoboEyes Parameter Expression
+## 6. RoboEyes Parameter Expression
 
 - `ANY /api/expression/param`
 

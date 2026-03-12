@@ -160,6 +160,39 @@ func maybeStringArg(args map[string]any, key string) string {
 	return strings.TrimSpace(s)
 }
 
+func boolArg(args map[string]any, key string) (bool, bool) {
+	v, ok := args[key]
+	if !ok {
+		return false, false
+	}
+	switch t := v.(type) {
+	case bool:
+		return t, true
+	case float64:
+		if t == 0 {
+			return false, true
+		}
+		if t == 1 {
+			return true, true
+		}
+	case int:
+		if t == 0 {
+			return false, true
+		}
+		if t == 1 {
+			return true, true
+		}
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "1", "true", "yes", "on":
+			return true, true
+		case "0", "false", "no", "off":
+			return false, true
+		}
+	}
+	return false, false
+}
+
 func jsonText(v any) string {
 	bytes, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -304,6 +337,74 @@ func addExpressionArgs(cmd map[string]any, args map[string]any) (bool, error) {
 	}
 
 	return changed, nil
+}
+
+func normalizeBuzzerPriority(raw string) (string, bool) {
+	v := strings.ToUpper(strings.TrimSpace(raw))
+	switch v {
+	case "LOW", "NORMAL", "HIGH", "ALARM":
+		return v, true
+	default:
+		return "", false
+	}
+}
+
+func normalizeBuzzerCommandArgs(args map[string]any) ([]map[string]any, int, bool, string, error) {
+	rawPattern, ok := args["pattern"]
+	if !ok {
+		return nil, 0, false, "", fmt.Errorf("pattern is required")
+	}
+
+	items, ok := rawPattern.([]any)
+	if !ok || len(items) == 0 || len(items) > 16 {
+		return nil, 0, false, "", fmt.Errorf("pattern must contain 1..16 steps")
+	}
+
+	pattern := make([]map[string]any, 0, len(items))
+	for index, item := range items {
+		stepMap, ok := item.(map[string]any)
+		if !ok {
+			return nil, 0, false, "", fmt.Errorf("pattern[%d] must be an object", index)
+		}
+		freq, ok := intArg(stepMap, "freq")
+		if !ok || freq < 0 || freq > 5000 {
+			return nil, 0, false, "", fmt.Errorf("pattern[%d].freq must be 0..5000", index)
+		}
+		durationMs, ok := intArg(stepMap, "duration_ms")
+		if !ok || durationMs < 1 || durationMs > 5000 {
+			return nil, 0, false, "", fmt.Errorf("pattern[%d].duration_ms must be 1..5000", index)
+		}
+		pattern = append(pattern, map[string]any{
+			"freq":        freq,
+			"duration_ms": durationMs,
+		})
+	}
+
+	repeat := 1
+	if value, ok := intArg(args, "repeat"); ok {
+		if value < 1 || value > 10 {
+			return nil, 0, false, "", fmt.Errorf("repeat must be 1..10")
+		}
+		repeat = value
+	}
+
+	interrupt := true
+	if value, ok := boolArg(args, "interrupt"); ok {
+		interrupt = value
+	} else if _, exists := args["interrupt"]; exists {
+		return nil, 0, false, "", fmt.Errorf("interrupt must be boolean")
+	}
+
+	priority := "NORMAL"
+	if raw := maybeStringArg(args, "priority"); raw != "" {
+		normalized, ok := normalizeBuzzerPriority(raw)
+		if !ok {
+			return nil, 0, false, "", fmt.Errorf("priority must be LOW/NORMAL/HIGH/ALARM")
+		}
+		priority = normalized
+	}
+
+	return pattern, repeat, interrupt, priority, nil
 }
 
 func addQueryParam(query url.Values, key string, value any) {
@@ -575,6 +676,58 @@ func main() {
 				cmd["hold_ms"] = hold
 			}
 			return mcp.NewToolResultText(callRobotEndpoint(bridge, http.MethodPost, "/api/expression/param", cmd)), nil
+		},
+	)
+
+	mcpServer.AddTool(
+		mcp.NewTool("robot_buzzer",
+			mcp.WithDescription("Play a robot-style buzzer pattern. Prefer short electronic chirps instead of long melodies: usually 3..6 steps, each 40..180 ms, with small pitch jumps and optional pauses using freq=0. pattern is an ordered array of {freq, duration_ms}; freq is in Hz and 0 means silence/pause. repeat replays the full pattern, interrupt controls whether the current sound can be cut off, and priority can be LOW/NORMAL/HIGH/ALARM so alert sounds are not replaced by ordinary prompts."),
+			mcp.WithArray("pattern",
+				mcp.Required(),
+				mcp.Description("Tone steps to play in order"),
+				mcp.MinItems(1),
+				mcp.MaxItems(16),
+				mcp.Items(map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"freq": map[string]any{
+							"type":        "number",
+							"description": "0..5000 Hz, 0 means silence/pause",
+							"minimum":     0,
+							"maximum":     5000,
+						},
+						"duration_ms": map[string]any{
+							"type":        "number",
+							"description": "1..5000 ms",
+							"minimum":     1,
+							"maximum":     5000,
+						},
+					},
+					"required":             []string{"freq", "duration_ms"},
+					"additionalProperties": false,
+				}),
+			),
+			mcp.WithNumber("repeat", mcp.Description("Optional repeat count, 1..10")),
+			mcp.WithBoolean("interrupt", mcp.Description("Whether to interrupt the currently playing sound")),
+			mcp.WithString("priority", mcp.Description("LOW/NORMAL/HIGH/ALARM")),
+		),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			args := request.GetArguments()
+			pattern, repeat, interrupt, priority, err := normalizeBuzzerCommandArgs(args)
+			if err != nil {
+				return mcp.NewToolResultText("invalid buzzer command: " + err.Error()), nil
+			}
+			patternJSON, err := json.Marshal(pattern)
+			if err != nil {
+				return mcp.NewToolResultText("invalid buzzer pattern"), nil
+			}
+			cmd := map[string]any{
+				"pattern":   string(patternJSON),
+				"repeat":    repeat,
+				"interrupt": interrupt,
+				"priority":  priority,
+			}
+			return mcp.NewToolResultText(callRobotEndpoint(bridge, http.MethodPost, "/api/buzzer", cmd)), nil
 		},
 	)
 

@@ -29,7 +29,7 @@ Topic 前缀默认是 `aicar`（可在固件和 MCP Server 同步修改）。
   "ip": "192.168.1.88",
   "mqtt_cmd_topic": "aicar/robots/car-001/cmd",
   "mqtt_ack_topic": "aicar/robots/car-001/ack",
-  "features": ["move", "set_wheels", "expression", "expression_param", "state"]
+  "features": ["move", "set_wheels", "expression", "expression_param", "buzzer", "state"]
 }
 ```
 
@@ -67,6 +67,7 @@ Topic 前缀默认是 `aicar`（可在固件和 MCP Server 同步修改）。
 - `MOVE`
 - `EXPRESSION`
 - `EXPRESSION_PARAM`
+- `BUZZER`
 
 ## 4. 应答格式（robot -> mcp）
 
@@ -131,12 +132,42 @@ Topic 前缀默认是 `aicar`（可在固件和 MCP Server 同步修改）。
 - `expression_hold_ms`: 可选 `1..30000`
 - 可带 RoboEyes 参数（见 `EXPRESSION_PARAM`）
 
-### 5.3 EXPRESSION
+### 5.3 BUZZER
+
+- `pattern`: 必填，数组长度 `1..16`
+- `pattern[].freq`: `0..5000`
+- `pattern[].duration_ms`: `1..5000`
+- `repeat`: 可选 `1..10`
+- `interrupt`: 可选 `true|false`
+- `priority`: 可选 `LOW|NORMAL|HIGH|ALARM`
+
+示例：
+
+```json
+{
+  "req_id": "8f3b7b24b8f14dbd",
+  "type": "BUZZER",
+  "args": {
+    "pattern": [
+      { "freq": 880, "duration_ms": 120 },
+      { "freq": 1320, "duration_ms": 80 },
+      { "freq": 1040, "duration_ms": 100 },
+      { "freq": 0, "duration_ms": 50 },
+      { "freq": 1560, "duration_ms": 140 }
+    ],
+    "repeat": 1,
+    "interrupt": true,
+    "priority": "NORMAL"
+  }
+}
+```
+
+### 5.4 EXPRESSION
 
 - `name`: `NEUTRAL|HAPPY|SAD|ANGRY|SLEEPY|SURPRISED|LOOK_LEFT|LOOK_RIGHT|WINK_LEFT|WINK_RIGHT|BLINK|CONFUSED|LAUGH`
 - `hold_ms`: 可选 `1..30000`
 
-### 5.4 EXPRESSION_PARAM
+### 5.5 EXPRESSION_PARAM
 
 至少一个参数：
 

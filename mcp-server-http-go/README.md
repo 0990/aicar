@@ -24,6 +24,7 @@ go run .
 - `robot_health`
 - `robot_state`
 - `robot_ping`
+- `robot_buzzer`
 - `robot_set_wheels`
 - `robot_expression`
 - `robot_expression_param`

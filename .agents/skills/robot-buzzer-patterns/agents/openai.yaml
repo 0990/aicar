@@ -1,0 +1,4 @@
+interface:
+  display_name: "Robot Buzzer Patterns"
+  short_description: "Generate robot-style buzzer prompts"
+  default_prompt: "Use $robot-buzzer-patterns to choose or adapt a robot buzzer pattern for AICar."

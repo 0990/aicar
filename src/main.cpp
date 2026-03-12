@@ -19,6 +19,7 @@
 namespace {
 
 enum class EyeAction { None = 0, Blink, WinkLeft, WinkRight, Confused, Laugh, Open, Close };
+enum class BuzzerPriority : uint8_t { Low = 0, Normal, High, Alarm };
 
 struct EyeStyle {
   uint8_t mood = DEFAULT;
@@ -61,6 +62,20 @@ struct StyleParamResult {
   EyeStyle style{};
   bool hasAction = false;
   EyeAction action = EyeAction::None;
+};
+
+struct BuzzerStep {
+  uint16_t freq = 0;
+  uint16_t durationMs = 0;
+};
+
+struct BuzzerCommand {
+  BuzzerStep pattern[robot::MAX_BUZZER_PATTERN_STEPS]{};
+  uint8_t stepCount = 0;
+  uint8_t repeat = 1;
+  bool interrupt = true;
+  BuzzerPriority priority = BuzzerPriority::Normal;
+  bool valid = false;
 };
 
 class MotorDriver {
@@ -111,7 +126,52 @@ private:
   }
 };
 
+class BuzzerDriver {
+public:
+  bool begin() {
+    if (!robot::BUZZER_ENABLED) {
+      ready_ = false;
+      return false;
+    }
+    ledcSetup(kChannel, kBaseFreqHz, kPwmResBits);
+    ledcAttachPin(robot::BUZZER_PIN, kChannel);
+    stop();
+    ready_ = true;
+    return true;
+  }
+
+  bool ready() const { return ready_; }
+
+  void play(uint16_t freqHz) {
+    if (!ready_) {
+      return;
+    }
+    if (freqHz == 0) {
+      stop();
+      return;
+    }
+    ledcWriteTone(kChannel, freqHz);
+    ledcWrite(kChannel, kDuty50Pct);
+  }
+
+  void stop() {
+    if (!ready_) {
+      return;
+    }
+    ledcWrite(kChannel, 0);
+  }
+
+private:
+  static constexpr uint8_t kChannel = 4;
+  static constexpr uint32_t kBaseFreqHz = 2000;
+  static constexpr uint8_t kPwmResBits = 8;
+  static constexpr uint8_t kDuty50Pct = 128;
+
+  bool ready_ = false;
+};
+
 MotorDriver g_motor;
+BuzzerDriver g_buzzer;
 WebServer g_server(robot::HTTP_PORT);
 Adafruit_SSD1306 g_oled(robot::OLED_WIDTH, robot::OLED_HEIGHT, &Wire, -1);
 RoboEyes<Adafruit_SSD1306> g_roboEyes(g_oled);
@@ -133,6 +193,16 @@ String g_lastEyeAction = "NONE";
 EyeStyle g_eyeStyleRevert{};
 String g_eyePresetRevertName = "NEUTRAL";
 uint32_t g_eyeRevertAtMs = 0;
+bool g_buzzerReady = false;
+BuzzerStep g_buzzerPattern[robot::MAX_BUZZER_PATTERN_STEPS]{};
+uint8_t g_buzzerPatternLength = 0;
+uint8_t g_buzzerCurrentStepIndex = 0;
+uint8_t g_buzzerRepeatRemaining = 0;
+uint8_t g_buzzerRepeatTotal = 0;
+uint16_t g_buzzerCurrentFreq = 0;
+uint32_t g_buzzerStepEndsAtMs = 0;
+BuzzerPriority g_buzzerCurrentPriority = BuzzerPriority::Normal;
+bool g_buzzerPlaying = false;
 
 String g_robotId = String(robot::ROBOT_ID);
 String g_mqttTopicRegister;
@@ -145,6 +215,8 @@ uint32_t g_lastMqttReconnectAttemptAtMs = 0;
 void applyExpressionFromRequest(const StyleParamResult &styleParams, bool hasPreset,
                                 const PresetResolveResult &preset, uint32_t holdMs,
                                 uint32_t fallbackHoldMs);
+bool parseBuzzerPriorityToken(const String &token, BuzzerPriority *priorityOut);
+void runBuzzerTasks();
 
 bool parseLongStrict(const String &token, long *out) {
   if (out == nullptr || token.length() == 0) {
@@ -1069,6 +1141,190 @@ bool parseStyleParamsFromJson(const JsonVariantConst &args, StyleParamResult *ou
   return true;
 }
 
+bool parseBuzzerStepFromJson(const JsonObjectConst &obj, BuzzerStep *out, String *errorOut) {
+  if (out == nullptr) {
+    return false;
+  }
+  int freq = 0;
+  if (obj["freq"].isNull() ||
+      !parseJsonIntInRange(obj["freq"], 0, static_cast<int>(robot::MAX_BUZZER_FREQ_HZ), &freq)) {
+    if (errorOut != nullptr) {
+      *errorOut = "bad freq";
+    }
+    return false;
+  }
+  int durationMs = 0;
+  if (obj["duration_ms"].isNull() ||
+      !parseJsonIntInRange(obj["duration_ms"], 1, static_cast<int>(robot::MAX_BUZZER_STEP_MS),
+                           &durationMs)) {
+    if (errorOut != nullptr) {
+      *errorOut = "bad duration_ms";
+    }
+    return false;
+  }
+  out->freq = static_cast<uint16_t>(freq);
+  out->durationMs = static_cast<uint16_t>(durationMs);
+  return true;
+}
+
+bool parseBuzzerPatternFromJson(const JsonVariantConst &patternVariant, BuzzerCommand *out, String *errorOut) {
+  if (out == nullptr || !patternVariant.is<JsonArrayConst>()) {
+    if (errorOut != nullptr) {
+      *errorOut = "missing pattern";
+    }
+    return false;
+  }
+
+  const JsonArrayConst array = patternVariant.as<JsonArrayConst>();
+  const size_t count = array.size();
+  if (count == 0 || count > robot::MAX_BUZZER_PATTERN_STEPS) {
+    if (errorOut != nullptr) {
+      *errorOut = "bad pattern";
+    }
+    return false;
+  }
+
+  BuzzerCommand result = *out;
+  result.stepCount = static_cast<uint8_t>(count);
+  size_t index = 0;
+  for (JsonVariantConst item : array) {
+    if (!item.is<JsonObjectConst>()) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad pattern step";
+      }
+      return false;
+    }
+    String stepError;
+    if (!parseBuzzerStepFromJson(item.as<JsonObjectConst>(), &result.pattern[index], &stepError)) {
+      if (errorOut != nullptr) {
+        *errorOut = "pattern[" + String(index) + "]." + stepError;
+      }
+      return false;
+    }
+    ++index;
+  }
+
+  *out = result;
+  return true;
+}
+
+bool parseBuzzerCommandFromJson(const JsonVariantConst &argsVariant, BuzzerCommand *out, String *errorOut) {
+  if (out == nullptr) {
+    return false;
+  }
+
+  BuzzerCommand result{};
+  result.repeat = 1;
+  result.interrupt = true;
+  result.priority = BuzzerPriority::Normal;
+
+  if (!argsVariant.is<JsonObjectConst>()) {
+    if (errorOut != nullptr) {
+      *errorOut = "missing pattern";
+    }
+    return false;
+  }
+
+  const JsonObjectConst args = argsVariant.as<JsonObjectConst>();
+  if (!parseBuzzerPatternFromJson(args["pattern"], &result, errorOut)) {
+    return false;
+  }
+
+  if (!args["repeat"].isNull()) {
+    int repeat = 0;
+    if (!parseJsonIntInRange(args["repeat"], 1, robot::MAX_BUZZER_REPEAT, &repeat)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad repeat";
+      }
+      return false;
+    }
+    result.repeat = static_cast<uint8_t>(repeat);
+  }
+  if (!args["interrupt"].isNull()) {
+    bool interrupt = true;
+    if (!parseJsonBool(args["interrupt"], &interrupt)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad interrupt";
+      }
+      return false;
+    }
+    result.interrupt = interrupt;
+  }
+  if (!args["priority"].isNull()) {
+    String priorityToken;
+    if (!parseJsonString(args["priority"], &priorityToken) ||
+        !parseBuzzerPriorityToken(priorityToken, &result.priority)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad priority";
+      }
+      return false;
+    }
+  }
+
+  result.valid = result.stepCount > 0;
+  *out = result;
+  return true;
+}
+
+bool parseBuzzerCommandFromArgs(BuzzerCommand *out, String *errorOut) {
+  if (out == nullptr || !g_server.hasArg("pattern")) {
+    if (errorOut != nullptr) {
+      *errorOut = "missing pattern";
+    }
+    return false;
+  }
+
+  JsonDocument patternDoc;
+  if (deserializeJson(patternDoc, g_server.arg("pattern"))) {
+    if (errorOut != nullptr) {
+      *errorOut = "bad pattern";
+    }
+    return false;
+  }
+
+  BuzzerCommand result{};
+  result.repeat = 1;
+  result.interrupt = true;
+  result.priority = BuzzerPriority::Normal;
+
+  if (!parseBuzzerPatternFromJson(patternDoc.as<JsonVariantConst>(), &result, errorOut)) {
+    return false;
+  }
+
+  if (g_server.hasArg("repeat")) {
+    int repeat = 0;
+    if (!parseIntRange(g_server.arg("repeat"), 1, robot::MAX_BUZZER_REPEAT, &repeat)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad repeat";
+      }
+      return false;
+    }
+    result.repeat = static_cast<uint8_t>(repeat);
+  }
+  if (g_server.hasArg("interrupt")) {
+    bool interrupt = true;
+    if (!parseBool(g_server.arg("interrupt"), &interrupt)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad interrupt";
+      }
+      return false;
+    }
+    result.interrupt = interrupt;
+  }
+  if (g_server.hasArg("priority")) {
+    if (!parseBuzzerPriorityToken(g_server.arg("priority"), &result.priority)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad priority";
+      }
+      return false;
+    }
+  }
+
+  result.valid = result.stepCount > 0;
+  *out = result;
+  return true;
+}
+
 void applyCommand(const Command &cmd) {
   if (!cmd.valid) {
     return;
@@ -1086,6 +1342,154 @@ void applyCommand(const Command &cmd) {
   } else {
     g_motionStopAtMs = millis() + normalized.durationMs;
   }
+}
+
+String buzzerPriorityName(BuzzerPriority priority) {
+  switch (priority) {
+  case BuzzerPriority::Low:
+    return "LOW";
+  case BuzzerPriority::High:
+    return "HIGH";
+  case BuzzerPriority::Alarm:
+    return "ALARM";
+  case BuzzerPriority::Normal:
+  default:
+    return "NORMAL";
+  }
+}
+
+bool parseBuzzerPriorityToken(const String &token, BuzzerPriority *priorityOut) {
+  if (priorityOut == nullptr || token.length() == 0) {
+    return false;
+  }
+  String upper = token;
+  upper.trim();
+  upper.toUpperCase();
+  if (upper == "LOW") {
+    *priorityOut = BuzzerPriority::Low;
+    return true;
+  }
+  if (upper == "NORMAL") {
+    *priorityOut = BuzzerPriority::Normal;
+    return true;
+  }
+  if (upper == "HIGH") {
+    *priorityOut = BuzzerPriority::High;
+    return true;
+  }
+  if (upper == "ALARM") {
+    *priorityOut = BuzzerPriority::Alarm;
+    return true;
+  }
+  return false;
+}
+
+void stopBuzzerPlayback() {
+  g_buzzer.stop();
+  g_buzzerPlaying = false;
+  g_buzzerPatternLength = 0;
+  g_buzzerCurrentStepIndex = 0;
+  g_buzzerRepeatRemaining = 0;
+  g_buzzerRepeatTotal = 0;
+  g_buzzerCurrentFreq = 0;
+  g_buzzerStepEndsAtMs = 0;
+  g_buzzerCurrentPriority = BuzzerPriority::Normal;
+}
+
+void startBuzzerStep() {
+  if (!g_buzzerPlaying || g_buzzerPatternLength == 0) {
+    stopBuzzerPlayback();
+    return;
+  }
+
+  if (g_buzzerCurrentStepIndex >= g_buzzerPatternLength) {
+    if (g_buzzerRepeatRemaining > 1) {
+      --g_buzzerRepeatRemaining;
+      g_buzzerCurrentStepIndex = 0;
+    } else {
+      stopBuzzerPlayback();
+      return;
+    }
+  }
+
+  const BuzzerStep &step = g_buzzerPattern[g_buzzerCurrentStepIndex];
+  g_buzzerCurrentFreq = step.freq;
+  if (step.freq == 0) {
+    g_buzzer.stop();
+  } else {
+    g_buzzer.play(step.freq);
+  }
+  g_buzzerStepEndsAtMs = millis() + step.durationMs;
+}
+
+bool queueBuzzerCommand(const BuzzerCommand &cmd, String *errorOut) {
+  if (!g_buzzerReady) {
+    if (errorOut != nullptr) {
+      *errorOut = "buzzer disabled";
+    }
+    return false;
+  }
+  if (!cmd.valid || cmd.stepCount == 0) {
+    if (errorOut != nullptr) {
+      *errorOut = "missing pattern";
+    }
+    return false;
+  }
+  if (g_buzzerPlaying) {
+    if (static_cast<uint8_t>(cmd.priority) < static_cast<uint8_t>(g_buzzerCurrentPriority)) {
+      if (errorOut != nullptr) {
+        *errorOut = "higher priority buzzer active";
+      }
+      return false;
+    }
+    if (!cmd.interrupt) {
+      if (errorOut != nullptr) {
+        *errorOut = "buzzer busy";
+      }
+      return false;
+    }
+  }
+
+  g_buzzer.stop();
+  for (uint8_t i = 0; i < cmd.stepCount; ++i) {
+    g_buzzerPattern[i] = cmd.pattern[i];
+  }
+  g_buzzerPatternLength = cmd.stepCount;
+  g_buzzerCurrentStepIndex = 0;
+  g_buzzerRepeatRemaining = cmd.repeat;
+  g_buzzerRepeatTotal = cmd.repeat;
+  g_buzzerCurrentPriority = cmd.priority;
+  g_buzzerPlaying = true;
+  startBuzzerStep();
+  return true;
+}
+
+String buildBuzzerStateJson() {
+  String json = "{\"enabled\":";
+  json += g_buzzerReady ? "true" : "false";
+  json += ",\"playing\":";
+  json += g_buzzerPlaying ? "true" : "false";
+  json += ",\"current_freq\":";
+  json += String(g_buzzerCurrentFreq);
+  json += ",\"priority\":\"";
+  json += buzzerPriorityName(g_buzzerCurrentPriority);
+  json += "\",\"repeat_total\":";
+  json += String(g_buzzerRepeatTotal);
+  json += ",\"repeat_remaining\":";
+  json += String(g_buzzerRepeatRemaining);
+  json += ",\"pattern_length\":";
+  json += String(g_buzzerPatternLength);
+  json += ",\"step_index\":";
+  json += g_buzzerPlaying ? String(g_buzzerCurrentStepIndex + 1) : String(0);
+  json += "}";
+  return json;
+}
+
+String buildBuzzerResultJson() {
+  String json = "{\"ok\":true,\"buzzer\":";
+  json += buildBuzzerStateJson();
+  json += "}";
+  return json;
 }
 
 bool isAuthorized() {
@@ -1155,6 +1559,8 @@ String buildStateJson(bool ok) {
   json += "}";
   json += ",\"oled_ready\":";
   json += g_oledReady ? "true" : "false";
+  json += ",\"buzzer\":";
+  json += buildBuzzerStateJson();
   json += ",\"uptime_ms\":";
   json += String(millis());
   json += "}";
@@ -1322,6 +1728,17 @@ bool executeCommandFromJson(const String &typeInput, const JsonVariantConst &arg
     applyExpressionFromRequest(styleParams, false, none, hasHold ? holdMs : 0, 0);
     *resultJson = "{\"ok\":true,\"expression\":\"" + g_eyePresetName +
                   "\",\"expression_last_action\":\"" + g_lastEyeAction + "\"}";
+    return true;
+  }
+  if (type == "BUZZER") {
+    BuzzerCommand buzzerCmd{};
+    if (!parseBuzzerCommandFromJson(argsVariant, &buzzerCmd, errorOut)) {
+      return false;
+    }
+    if (!queueBuzzerCommand(buzzerCmd, errorOut)) {
+      return false;
+    }
+    *resultJson = buildBuzzerResultJson();
     return true;
   }
   if (type == "MOVE") {
@@ -1703,6 +2120,25 @@ void handleExpressionParam() {
   sendJson(200, json);
 }
 
+void handleBuzzer() {
+  if (!isAuthorized()) {
+    sendJson(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
+    return;
+  }
+
+  BuzzerCommand buzzerCmd{};
+  String errorText;
+  if (!parseBuzzerCommandFromArgs(&buzzerCmd, &errorText)) {
+    sendJson(400, "{\"ok\":false,\"error\":\"" + escapeJsonString(errorText) + "\"}");
+    return;
+  }
+  if (!queueBuzzerCommand(buzzerCmd, &errorText)) {
+    sendJson(409, "{\"ok\":false,\"error\":\"" + escapeJsonString(errorText) + "\"}");
+    return;
+  }
+  sendJson(200, buildBuzzerResultJson());
+}
+
 void handleNotFound() { sendJson(404, "{\"ok\":false,\"error\":\"not_found\"}"); }
 
 bool connectWifi() {
@@ -1778,7 +2214,7 @@ void publishMqttRegister() {
   payload += g_mqttTopicCommand;
   payload += "\",\"mqtt_ack_topic\":\"";
   payload += g_mqttTopicAck;
-  payload += "\",\"features\":[\"move\",\"set_wheels\",\"expression\",\"expression_param\",\"state\"]}";
+  payload += "\",\"features\":[\"move\",\"set_wheels\",\"expression\",\"expression_param\",\"buzzer\",\"state\"]}";
   publishMqtt(g_mqttTopicRegister, payload, true);
 }
 
@@ -1895,6 +2331,7 @@ void startHttpServer() {
   g_server.on("/api/wheels", HTTP_ANY, handleWheels);
   g_server.on("/api/expression", HTTP_ANY, handleExpression);
   g_server.on("/api/expression/param", HTTP_ANY, handleExpressionParam);
+  g_server.on("/api/buzzer", HTTP_ANY, handleBuzzer);
   g_server.onNotFound(handleNotFound);
   g_server.begin();
 }
@@ -1934,6 +2371,18 @@ void runEyesTasks() {
   }
 }
 
+void runBuzzerTasks() {
+  if (!g_buzzerPlaying || g_buzzerStepEndsAtMs == 0) {
+    return;
+  }
+  const uint32_t now = millis();
+  if (static_cast<int32_t>(now - g_buzzerStepEndsAtMs) < 0) {
+    return;
+  }
+  ++g_buzzerCurrentStepIndex;
+  startBuzzerStep();
+}
+
 } // namespace
 
 void setup() {
@@ -1942,6 +2391,7 @@ void setup() {
   randomSeed(static_cast<uint32_t>(micros()));
 
   g_motor.begin();
+  g_buzzerReady = g_buzzer.begin();
   EyeStyle bootStyle{};
   bootStyle.autoBlink = true;
   bootStyle.autoBlinkInterval = 3;
@@ -1969,6 +2419,7 @@ void setup() {
     Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
   }
   Serial.printf("OLED: %s\n", oledOk ? "ready (RoboEyes)" : "disabled_or_not_found");
+  Serial.printf("Buzzer: %s\n", g_buzzerReady ? "ready" : "disabled_or_not_found");
   if (robot::MQTT_ENABLED) {
     Serial.printf("MQTT: %s\n", mqttOk ? "connected" : "disconnected");
     Serial.printf("MQTT broker: %s:%u\n", robot::MQTT_BROKER, robot::MQTT_PORT);
@@ -1986,6 +2437,8 @@ void setup() {
   Serial.println("  ANY  /api/expression?name=CONFUSED");
   Serial.println(
       "  ANY  /api/expression/param?mood=ANGRY&position=NE&curiosity=1&hflicker_amp=2&action=BLINK");
+  Serial.println(
+      "  ANY  /api/buzzer?pattern=%5B%7B%22freq%22%3A880%2C%22duration_ms%22%3A120%7D%5D&repeat=1&interrupt=true&priority=NORMAL");
 }
 
 void loop() {
@@ -1993,5 +2446,6 @@ void loop() {
   runMqttTasks();
   runSafetyStop();
   runEyesTasks();
+  runBuzzerTasks();
   delay(2);
 }

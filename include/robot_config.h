@@ -16,6 +16,14 @@ static constexpr uint32_t DEFAULT_MOVE_MS = 700;   // timed move for voice comma
 static constexpr uint32_t MAX_MOVE_MS = 10000;     // hard safety cap
 static constexpr uint32_t FAILSAFE_STOP_MS = 3000; // stop if no command in this window
 
+// Passive buzzer output. Update pin based on your wiring.
+static constexpr bool BUZZER_ENABLED = true;
+static constexpr uint8_t BUZZER_PIN = 10;
+static constexpr uint16_t MAX_BUZZER_FREQ_HZ = 5000;
+static constexpr uint16_t MAX_BUZZER_STEP_MS = 5000;
+static constexpr uint8_t MAX_BUZZER_PATTERN_STEPS = 16;
+static constexpr uint8_t MAX_BUZZER_REPEAT = 10;
+
 // WiFi + HTTP API settings.
 // Set these before flashing.
 static constexpr const char *WIFI_SSID = "1";
