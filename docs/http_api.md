@@ -19,6 +19,12 @@ Base URL: `http://<robot_ip>:<port>`
   "ip": "192.168.1.88",
   "motion": "STOP",
   "default_speed": 180,
+  "wheels": {
+    "left_direction": "STOP",
+    "left_speed": 0,
+    "right_direction": "STOP",
+    "right_speed": 0
+  },
   "expression_engine": "ROBOEYES",
   "expression": "NEUTRAL",
   "expression_last_action": "NONE",
@@ -46,24 +52,25 @@ Base URL: `http://<robot_ip>:<port>`
 
 - `ANY /ping`
 
-## 3. Movement
+## 3. Wheel Control
 
-- `ANY /api/move`
+- `ANY /api/wheels`
 
 参数：
 
-- `direction`: `FORWARD|BACKWARD|LEFT|RIGHT|STOP`
+- `left_direction`: `FORWARD|BACKWARD`
+- `left_speed`: `0..100`
+- `right_direction`: `FORWARD|BACKWARD`
+- `right_speed`: `0..100`
 - `duration_ms`: 可选，`1..10000`
-- `speed`: 可选，`0..255`
 - `expression`: 可选，预设表情
 - `expression_hold_ms`: 可选，临时表情保持时长
-- 或 `command`: 可选，原始命令（如 `FORWARD 800 180`）
 - 还可带 RoboEyes 参数，字段同 `api/expression/param`
 
 示例：
 
 ```bash
-curl -X POST "http://192.168.1.88/api/move?direction=FORWARD&duration_ms=900&speed=180&mood=HAPPY&action=BLINK"
+curl -X POST "http://192.168.1.88/api/wheels?left_direction=FORWARD&left_speed=100&right_direction=FORWARD&right_speed=100&mood=HAPPY&action=BLINK"
 ```
 
 ## 4. Preset Expression
@@ -109,11 +116,3 @@ curl -X POST "http://192.168.1.88/api/expression?name=CONFUSED&hold_ms=1500"
 ```bash
 curl -X POST "http://192.168.1.88/api/expression/param?mood=ANGRY&position=NE&curiosity=1&auto_blink=1&hflicker_amp=2&action=BLINK"
 ```
-
-## 6. Stop / Speed / Raw
-
-- `ANY /api/stop`
-- `ANY /api/speed?speed=200`
-- `ANY /api/raw?command=FORWARD%20800%20180`
-- `ANY /api/raw?command=EXPR%20HAPPY`
-- `ANY /api/raw?command=ACTION%20CONFUSED`

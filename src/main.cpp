@@ -18,7 +18,6 @@
 
 namespace {
 
-enum class Motion { Stop = 0, Forward, Backward, Left, Right };
 enum class EyeAction { None = 0, Blink, WinkLeft, WinkRight, Confused, Laugh, Open, Close };
 
 struct EyeStyle {
@@ -38,9 +37,13 @@ struct EyeStyle {
 };
 
 struct Command {
-  Motion motion = Motion::Stop;
   uint32_t durationMs = 0;
   uint8_t speed = robot::DEFAULT_SPEED;
+  int16_t leftMotor = 0;
+  int16_t rightMotor = 0;
+  uint8_t leftSpeedPct = 0;
+  uint8_t rightSpeedPct = 0;
+  bool usesWheelControl = false;
   bool valid = false;
 };
 
@@ -74,26 +77,7 @@ public:
     stop();
   }
 
-  void drive(Motion motion, uint8_t speed) {
-    switch (motion) {
-    case Motion::Forward:
-      driveDifferential(static_cast<int16_t>(speed), static_cast<int16_t>(speed));
-      break;
-    case Motion::Backward:
-      driveDifferential(static_cast<int16_t>(-speed), static_cast<int16_t>(-speed));
-      break;
-    case Motion::Left:
-      driveDifferential(static_cast<int16_t>(-speed), static_cast<int16_t>(speed));
-      break;
-    case Motion::Right:
-      driveDifferential(static_cast<int16_t>(speed), static_cast<int16_t>(-speed));
-      break;
-    case Motion::Stop:
-    default:
-      stop();
-      break;
-    }
-  }
+  void driveWheels(int16_t left, int16_t right) { driveDifferential(left, right); }
 
   void stop() { driveDifferential(0, 0); }
 
@@ -137,7 +121,10 @@ PubSubClient g_mqttClient(g_mqttNetClient);
 uint8_t g_defaultSpeed = robot::DEFAULT_SPEED;
 uint32_t g_motionStopAtMs = 0;
 uint32_t g_lastCommandAtMs = 0;
-Motion g_currentMotion = Motion::Stop;
+int16_t g_currentLeftMotor = 0;
+int16_t g_currentRightMotor = 0;
+uint8_t g_currentLeftSpeedPct = 0;
+uint8_t g_currentRightSpeedPct = 0;
 
 bool g_oledReady = false;
 EyeStyle g_eyeStyle{};
@@ -242,31 +229,19 @@ bool parseBool(const String &token, bool *out) {
   return false;
 }
 
-bool parseMotionToken(const String &token, Motion *motionOut) {
-  if (motionOut == nullptr || token.length() == 0) {
+bool parseWheelDirectionToken(const String &token, int8_t *signOut) {
+  if (signOut == nullptr || token.length() == 0) {
     return false;
   }
   String upper = token;
   upper.trim();
   upper.toUpperCase();
   if (upper == "FORWARD" || upper == "F") {
-    *motionOut = Motion::Forward;
+    *signOut = 1;
     return true;
   }
   if (upper == "BACKWARD" || upper == "B") {
-    *motionOut = Motion::Backward;
-    return true;
-  }
-  if (upper == "LEFT" || upper == "L") {
-    *motionOut = Motion::Left;
-    return true;
-  }
-  if (upper == "RIGHT" || upper == "R") {
-    *motionOut = Motion::Right;
-    return true;
-  }
-  if (upper == "STOP" || upper == "S") {
-    *motionOut = Motion::Stop;
+    *signOut = -1;
     return true;
   }
   return false;
@@ -333,20 +308,118 @@ bool parseJsonIntInRange(const JsonVariantConst &value, int minValue, int maxVal
   return true;
 }
 
-String motionName(Motion motion) {
-  switch (motion) {
-  case Motion::Forward:
+String wheelDirectionName(int16_t signedSpeed) {
+  if (signedSpeed > 0) {
     return "FORWARD";
-  case Motion::Backward:
+  }
+  if (signedSpeed < 0) {
     return "BACKWARD";
-  case Motion::Left:
-    return "LEFT";
-  case Motion::Right:
-    return "RIGHT";
-  case Motion::Stop:
-  default:
+  }
+  return "STOP";
+}
+
+uint8_t speedToPercent(uint8_t speed) {
+  return static_cast<uint8_t>((static_cast<uint16_t>(speed) * 100U + 127U) / 255U);
+}
+
+uint8_t percentToSpeed(uint8_t percent) {
+  return static_cast<uint8_t>((static_cast<uint16_t>(percent) * 255U + 50U) / 100U);
+}
+
+String motionNameFromWheelSpeeds(int16_t left, int16_t right) {
+  if (left == 0 && right == 0) {
     return "STOP";
   }
+  if (left > 0 && right > 0 && left == right) {
+    return "FORWARD";
+  }
+  if (left < 0 && right < 0 && left == right) {
+    return "BACKWARD";
+  }
+  if (left < 0 && right > 0 && -left == right) {
+    return "LEFT";
+  }
+  if (left > 0 && right < 0 && left == -right) {
+    return "RIGHT";
+  }
+  return "CUSTOM";
+}
+
+void refreshCommandFields(Command *cmd) {
+  if (cmd == nullptr) {
+    return;
+  }
+  cmd->speed = static_cast<uint8_t>(max(abs(cmd->leftMotor), abs(cmd->rightMotor)));
+  if (!cmd->usesWheelControl) {
+    cmd->leftSpeedPct = speedToPercent(static_cast<uint8_t>(abs(cmd->leftMotor)));
+    cmd->rightSpeedPct = speedToPercent(static_cast<uint8_t>(abs(cmd->rightMotor)));
+  }
+  cmd->usesWheelControl = true;
+}
+
+bool setWheelCommand(Command *cmd, int8_t leftSign, uint8_t leftSpeedPct, int8_t rightSign,
+                     uint8_t rightSpeedPct, uint32_t durationMs) {
+  if (cmd == nullptr) {
+    return false;
+  }
+  const int16_t leftSpeed = static_cast<int16_t>(percentToSpeed(leftSpeedPct));
+  const int16_t rightSpeed = static_cast<int16_t>(percentToSpeed(rightSpeedPct));
+  cmd->leftMotor = (leftSpeedPct == 0) ? 0 : static_cast<int16_t>(leftSign * leftSpeed);
+  cmd->rightMotor = (rightSpeedPct == 0) ? 0 : static_cast<int16_t>(rightSign * rightSpeed);
+  cmd->durationMs = durationMs;
+  refreshCommandFields(cmd);
+  cmd->leftSpeedPct = leftSpeedPct;
+  cmd->rightSpeedPct = rightSpeedPct;
+  cmd->valid = true;
+  return true;
+}
+
+bool setCommandFromMoveDirection(const String &token, uint8_t speed, uint32_t durationMs, Command *cmdOut) {
+  if (cmdOut == nullptr || token.length() == 0) {
+    return false;
+  }
+  String upper = token;
+  upper.trim();
+  upper.toUpperCase();
+  if (upper == "FORWARD" || upper == "F") {
+    return setWheelCommand(cmdOut, 1, speedToPercent(speed), 1, speedToPercent(speed), durationMs);
+  }
+  if (upper == "BACKWARD" || upper == "B") {
+    return setWheelCommand(cmdOut, -1, speedToPercent(speed), -1, speedToPercent(speed), durationMs);
+  }
+  if (upper == "LEFT" || upper == "L") {
+    return setWheelCommand(cmdOut, -1, speedToPercent(speed), 1, speedToPercent(speed), durationMs);
+  }
+  if (upper == "RIGHT" || upper == "R") {
+    return setWheelCommand(cmdOut, 1, speedToPercent(speed), -1, speedToPercent(speed), durationMs);
+  }
+  return false;
+}
+
+String buildMovementResultJson(const Command &cmd) {
+  Command view = cmd;
+  refreshCommandFields(&view);
+
+  String json = "{\"ok\":true,\"motion\":\"";
+  json += motionNameFromWheelSpeeds(view.leftMotor, view.rightMotor);
+  json += "\",\"duration_ms\":";
+  json += String(view.durationMs);
+  json += ",\"speed\":";
+  json += String(view.speed);
+  json += ",\"wheels\":{\"left_direction\":\"";
+  json += wheelDirectionName(view.leftMotor);
+  json += "\",\"left_speed\":";
+  json += String(view.leftSpeedPct);
+  json += ",\"right_direction\":\"";
+  json += wheelDirectionName(view.rightMotor);
+  json += "\",\"right_speed\":";
+  json += String(view.rightSpeedPct);
+  json += "},\"expression\":\"";
+  json += g_eyePresetName;
+  json += "\",\"expression_last_action\":\"";
+  json += g_lastEyeAction;
+  json += "\"}";
+  return json;
 }
 
 String moodName(uint8_t mood) {
@@ -996,110 +1069,22 @@ bool parseStyleParamsFromJson(const JsonVariantConst &args, StyleParamResult *ou
   return true;
 }
 
-bool parseVoiceText(const String &voiceText, Command *cmdOut) {
-  if (cmdOut == nullptr) {
-    return false;
-  }
-  String text = voiceText;
-  text.trim();
-  text.toLowerCase();
-  if (text.length() == 0) {
-    return false;
-  }
-
-  if (text.indexOf("stop") >= 0 || text.indexOf("halt") >= 0 || text.indexOf("停止") >= 0 ||
-      text.indexOf("刹车") >= 0 || text.indexOf("停下") >= 0) {
-    cmdOut->motion = Motion::Stop;
-    cmdOut->durationMs = 0;
-    cmdOut->speed = g_defaultSpeed;
-    cmdOut->valid = true;
-    return true;
-  }
-  if (text.indexOf("forward") >= 0 || text.indexOf("ahead") >= 0 || text.indexOf("前进") >= 0 ||
-      text.indexOf("向前") >= 0) {
-    cmdOut->motion = Motion::Forward;
-  } else if (text.indexOf("backward") >= 0 || text.indexOf("reverse") >= 0 ||
-             text.indexOf("后退") >= 0 || text.indexOf("向后") >= 0) {
-    cmdOut->motion = Motion::Backward;
-  } else if (text.indexOf("left") >= 0 || text.indexOf("左转") >= 0 || text.indexOf("向左") >= 0) {
-    cmdOut->motion = Motion::Left;
-  } else if (text.indexOf("right") >= 0 || text.indexOf("右转") >= 0 || text.indexOf("向右") >= 0) {
-    cmdOut->motion = Motion::Right;
-  } else {
-    return false;
-  }
-
-  cmdOut->durationMs = robot::DEFAULT_MOVE_MS;
-  cmdOut->speed = g_defaultSpeed;
-  cmdOut->valid = true;
-  return true;
-}
-
-Command parseRawCommand(const String &line) {
-  Command cmd{};
-  String trimmed = line;
-  trimmed.trim();
-  if (trimmed.length() == 0) {
-    return cmd;
-  }
-
-  if (trimmed.startsWith("VOICE ") || trimmed.startsWith("voice ")) {
-    const int idx = trimmed.indexOf(' ');
-    if (idx >= 0) {
-      parseVoiceText(trimmed.substring(idx + 1), &cmd);
-    }
-    return cmd;
-  }
-
-  const int firstSpace = trimmed.indexOf(' ');
-  String token = (firstSpace < 0) ? trimmed : trimmed.substring(0, firstSpace);
-  Motion motion = Motion::Stop;
-  if (!parseMotionToken(token, &motion)) {
-    return cmd;
-  }
-
-  cmd.motion = motion;
-  cmd.speed = g_defaultSpeed;
-  cmd.durationMs = 0;
-  cmd.valid = true;
-  if (motion == Motion::Stop) {
-    return cmd;
-  }
-
-  String rest = (firstSpace < 0) ? "" : trimmed.substring(firstSpace + 1);
-  rest.trim();
-  if (rest.length() == 0) {
-    return cmd;
-  }
-
-  const int secondSpace = rest.indexOf(' ');
-  String durationToken = (secondSpace < 0) ? rest : rest.substring(0, secondSpace);
-  uint32_t durationMs = 0;
-  if (parseDuration(durationToken, &durationMs)) {
-    cmd.durationMs = durationMs;
-  }
-  if (secondSpace >= 0) {
-    String speedToken = rest.substring(secondSpace + 1);
-    speedToken.trim();
-    uint8_t speed = g_defaultSpeed;
-    if (parseSpeed(speedToken, &speed)) {
-      cmd.speed = speed;
-    }
-  }
-  return cmd;
-}
-
 void applyCommand(const Command &cmd) {
   if (!cmd.valid) {
     return;
   }
+  Command normalized = cmd;
+  refreshCommandFields(&normalized);
   g_lastCommandAtMs = millis();
-  g_currentMotion = cmd.motion;
-  g_motor.drive(cmd.motion, cmd.speed);
-  if (cmd.motion == Motion::Stop || cmd.durationMs == 0) {
+  g_currentLeftMotor = normalized.leftMotor;
+  g_currentRightMotor = normalized.rightMotor;
+  g_currentLeftSpeedPct = normalized.leftSpeedPct;
+  g_currentRightSpeedPct = normalized.rightSpeedPct;
+  g_motor.driveWheels(normalized.leftMotor, normalized.rightMotor);
+  if ((normalized.leftMotor == 0 && normalized.rightMotor == 0) || normalized.durationMs == 0) {
     g_motionStopAtMs = 0;
   } else {
-    g_motionStopAtMs = millis() + cmd.durationMs;
+    g_motionStopAtMs = millis() + normalized.durationMs;
   }
 }
 
@@ -1123,9 +1108,18 @@ String buildStateJson(bool ok) {
   json += ",\"ip\":\"";
   json += WiFi.localIP().toString();
   json += "\",\"motion\":\"";
-  json += motionName(g_currentMotion);
+  json += motionNameFromWheelSpeeds(g_currentLeftMotor, g_currentRightMotor);
   json += "\",\"default_speed\":";
   json += String(g_defaultSpeed);
+  json += ",\"wheels\":{\"left_direction\":\"";
+  json += wheelDirectionName(g_currentLeftMotor);
+  json += "\",\"left_speed\":";
+  json += String(g_currentLeftSpeedPct);
+  json += ",\"right_direction\":\"";
+  json += wheelDirectionName(g_currentRightMotor);
+  json += "\",\"right_speed\":";
+  json += String(g_currentRightSpeedPct);
+  json += "}";
   json += ",\"expression_engine\":\"ROBOEYES\"";
   json += ",\"expression\":\"";
   json += g_eyePresetName;
@@ -1247,63 +1241,6 @@ bool readJsonU8Arg(const JsonObjectConst &obj, const char *key, uint8_t minValue
   return true;
 }
 
-bool executeRawCommand(const String &raw, String *resultJson, String *error) {
-  String text = raw;
-  text.trim();
-  if (text.length() == 0) {
-    if (error != nullptr) {
-      *error = "missing command";
-    }
-    return false;
-  }
-
-  if (text.startsWith("EXPR ") || text.startsWith("EXPRESSION ")) {
-    const int idx = text.indexOf(' ');
-    PresetResolveResult preset{};
-    if (!resolvePreset(text.substring(idx + 1), &preset)) {
-      if (error != nullptr) {
-        *error = "bad expression";
-      }
-      return false;
-    }
-    StyleParamResult none{};
-    applyExpressionFromRequest(none, true, preset, 0, 0);
-    if (resultJson != nullptr) {
-      *resultJson = "{\"ok\":true}";
-    }
-    return true;
-  }
-
-  if (text.startsWith("ACTION ")) {
-    const int idx = text.indexOf(' ');
-    EyeAction action = EyeAction::None;
-    if (!parseActionToken(text.substring(idx + 1), &action)) {
-      if (error != nullptr) {
-        *error = "bad action";
-      }
-      return false;
-    }
-    applyEyeAction(action);
-    if (resultJson != nullptr) {
-      *resultJson = "{\"ok\":true}";
-    }
-    return true;
-  }
-
-  const Command cmd = parseRawCommand(text);
-  if (!cmd.valid) {
-    if (error != nullptr) {
-      *error = "bad command";
-    }
-    return false;
-  }
-  applyCommand(cmd);
-  if (resultJson != nullptr) {
-    *resultJson = "{\"ok\":true}";
-  }
-  return true;
-}
-
 bool executeCommandFromJson(const String &typeInput, const JsonVariantConst &argsVariant, String *resultJson,
                             String *errorOut) {
   String type = typeInput;
@@ -1322,39 +1259,6 @@ bool executeCommandFromJson(const String &typeInput, const JsonVariantConst &arg
   if (type == "STATE" || type == "HEALTH") {
     *resultJson = buildStateJson(true);
     return true;
-  }
-  if (type == "STOP") {
-    Command stop{};
-    stop.motion = Motion::Stop;
-    stop.durationMs = 0;
-    stop.speed = g_defaultSpeed;
-    stop.valid = true;
-    applyCommand(stop);
-    *resultJson = "{\"ok\":true,\"motion\":\"STOP\"}";
-    return true;
-  }
-  if (type == "SPEED") {
-    bool hasSpeed = false;
-    uint8_t speed = g_defaultSpeed;
-    if (!readJsonU8Arg(args, "speed", 0, 255, &hasSpeed, &speed) || !hasSpeed) {
-      if (errorOut != nullptr) {
-        *errorOut = "missing or bad speed";
-      }
-      return false;
-    }
-    g_defaultSpeed = speed;
-    *resultJson = String("{\"ok\":true,\"speed\":") + String(g_defaultSpeed) + "}";
-    return true;
-  }
-  if (type == "RAW") {
-    String raw;
-    if (!readJsonStringArg(args, "command", &raw)) {
-      if (errorOut != nullptr) {
-        *errorOut = "missing command";
-      }
-      return false;
-    }
-    return executeRawCommand(raw, resultJson, errorOut);
   }
   if (type == "EXPRESSION") {
     String expressionName;
@@ -1422,52 +1326,36 @@ bool executeCommandFromJson(const String &typeInput, const JsonVariantConst &arg
   }
   if (type == "MOVE") {
     Command cmd{};
-    String rawCommand;
-    if (readJsonStringArg(args, "command", &rawCommand)) {
-      cmd = parseRawCommand(rawCommand);
-    } else {
-      String direction;
-      if (!readJsonStringArg(args, "direction", &direction)) {
-        if (errorOut != nullptr) {
-          *errorOut = "missing direction or command";
-        }
-        return false;
+    String direction;
+    if (!readJsonStringArg(args, "direction", &direction)) {
+      if (errorOut != nullptr) {
+        *errorOut = "missing direction";
       }
-      Motion motion = Motion::Stop;
-      if (!parseMotionToken(direction, &motion)) {
-        if (errorOut != nullptr) {
-          *errorOut = "bad direction";
-        }
-        return false;
+      return false;
+    }
+    bool hasSpeed = false;
+    uint8_t speed = g_defaultSpeed;
+    if (!readJsonU8Arg(args, "speed", 0, 255, &hasSpeed, &speed)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad speed";
       }
-      cmd.motion = motion;
-      cmd.speed = g_defaultSpeed;
-      cmd.durationMs = 0;
-      cmd.valid = true;
+      return false;
+    }
 
-      bool hasDuration = false;
-      uint32_t durationMs = 0;
-      if (!readJsonUIntArg(args, "duration_ms", 1, robot::MAX_MOVE_MS, &hasDuration, &durationMs)) {
-        if (errorOut != nullptr) {
-          *errorOut = "bad duration_ms";
-        }
-        return false;
+    bool hasDuration = false;
+    uint32_t durationMs = 0;
+    if (!readJsonUIntArg(args, "duration_ms", 1, robot::MAX_MOVE_MS, &hasDuration, &durationMs)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad duration_ms";
       }
-      if (hasDuration && motion != Motion::Stop) {
-        cmd.durationMs = durationMs;
-      }
+      return false;
+    }
 
-      bool hasSpeed = false;
-      uint8_t speed = g_defaultSpeed;
-      if (!readJsonU8Arg(args, "speed", 0, 255, &hasSpeed, &speed)) {
-        if (errorOut != nullptr) {
-          *errorOut = "bad speed";
-        }
-        return false;
+    if (!setCommandFromMoveDirection(direction, speed, hasDuration ? durationMs : 0, &cmd)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad direction";
       }
-      if (hasSpeed) {
-        cmd.speed = speed;
-      }
+      return false;
     }
 
     if (!cmd.valid) {
@@ -1512,9 +1400,99 @@ bool executeCommandFromJson(const String &typeInput, const JsonVariantConst &arg
     applyCommand(cmd);
     applyExpressionFromRequest(styleParams, hasPreset, preset, hasHold ? holdMs : 0, cmd.durationMs);
 
-    *resultJson = "{\"ok\":true,\"motion\":\"" + motionName(cmd.motion) + "\",\"duration_ms\":" +
-                  String(cmd.durationMs) + ",\"speed\":" + String(cmd.speed) + ",\"expression\":\"" +
-                  g_eyePresetName + "\",\"expression_last_action\":\"" + g_lastEyeAction + "\"}";
+    *resultJson = buildMovementResultJson(cmd);
+    return true;
+  }
+  if (type == "SET_WHEELS" || type == "WHEELS") {
+    String leftDirection;
+    String rightDirection;
+    if (!readJsonStringArg(args, "left_direction", &leftDirection) ||
+        !readJsonStringArg(args, "right_direction", &rightDirection)) {
+      if (errorOut != nullptr) {
+        *errorOut = "missing wheel direction";
+      }
+      return false;
+    }
+
+    int8_t leftSign = 1;
+    int8_t rightSign = 1;
+    if (!parseWheelDirectionToken(leftDirection, &leftSign)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad left_direction";
+      }
+      return false;
+    }
+    if (!parseWheelDirectionToken(rightDirection, &rightSign)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad right_direction";
+      }
+      return false;
+    }
+
+    bool hasLeftSpeed = false;
+    bool hasRightSpeed = false;
+    uint8_t leftSpeedPct = 0;
+    uint8_t rightSpeedPct = 0;
+    if (!readJsonU8Arg(args, "left_speed", 0, 100, &hasLeftSpeed, &leftSpeedPct) || !hasLeftSpeed) {
+      if (errorOut != nullptr) {
+        *errorOut = "missing or bad left_speed";
+      }
+      return false;
+    }
+    if (!readJsonU8Arg(args, "right_speed", 0, 100, &hasRightSpeed, &rightSpeedPct) || !hasRightSpeed) {
+      if (errorOut != nullptr) {
+        *errorOut = "missing or bad right_speed";
+      }
+      return false;
+    }
+
+    bool hasDuration = false;
+    uint32_t durationMs = 0;
+    if (!readJsonUIntArg(args, "duration_ms", 1, robot::MAX_MOVE_MS, &hasDuration, &durationMs)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad duration_ms";
+      }
+      return false;
+    }
+
+    Command cmd{};
+    setWheelCommand(&cmd, leftSign, leftSpeedPct, rightSign, rightSpeedPct, hasDuration ? durationMs : 0);
+
+    StyleParamResult styleParams{};
+    String parseError;
+    if (!parseStyleParamsFromJson(argsVariant, &styleParams, &parseError)) {
+      if (errorOut != nullptr) {
+        *errorOut = parseError.length() > 0 ? parseError : String("bad expression param");
+      }
+      return false;
+    }
+
+    PresetResolveResult preset{};
+    bool hasPreset = false;
+    String expression;
+    if (readJsonStringArg(args, "expression", &expression)) {
+      hasPreset = resolvePreset(expression, &preset);
+      if (!hasPreset) {
+        if (errorOut != nullptr) {
+          *errorOut = "bad expression";
+        }
+        return false;
+      }
+    }
+
+    uint32_t holdMs = 0;
+    bool hasHold = false;
+    if (!readJsonUIntArg(args, "expression_hold_ms", 1, robot::MAX_EXPRESSION_HOLD_MS, &hasHold,
+                         &holdMs)) {
+      if (errorOut != nullptr) {
+        *errorOut = "bad expression_hold_ms";
+      }
+      return false;
+    }
+
+    applyCommand(cmd);
+    applyExpressionFromRequest(styleParams, hasPreset, preset, hasHold ? holdMs : 0, cmd.durationMs);
+    *resultJson = buildMovementResultJson(cmd);
     return true;
   }
   if (errorOut != nullptr) {
@@ -1582,40 +1560,51 @@ void applyExpressionFromRequest(const StyleParamResult &styleParams, bool hasPre
   }
 }
 
-void handleMove() {
+void handleWheels() {
   if (!isAuthorized()) {
     sendJson(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
     return;
   }
+  if (!g_server.hasArg("left_direction") || !g_server.hasArg("right_direction")) {
+    sendJson(400, "{\"ok\":false,\"error\":\"missing wheel direction\"}");
+    return;
+  }
+  if (!g_server.hasArg("left_speed") || !g_server.hasArg("right_speed")) {
+    sendJson(400, "{\"ok\":false,\"error\":\"missing wheel speed\"}");
+    return;
+  }
+
+  int8_t leftSign = 1;
+  int8_t rightSign = 1;
+  if (!parseWheelDirectionToken(g_server.arg("left_direction"), &leftSign)) {
+    sendJson(400, "{\"ok\":false,\"error\":\"bad left_direction\"}");
+    return;
+  }
+  if (!parseWheelDirectionToken(g_server.arg("right_direction"), &rightSign)) {
+    sendJson(400, "{\"ok\":false,\"error\":\"bad right_direction\"}");
+    return;
+  }
+
+  int leftSpeedValue = 0;
+  int rightSpeedValue = 0;
+  if (!parseIntRange(g_server.arg("left_speed"), 0, 100, &leftSpeedValue)) {
+    sendJson(400, "{\"ok\":false,\"error\":\"bad left_speed\"}");
+    return;
+  }
+  if (!parseIntRange(g_server.arg("right_speed"), 0, 100, &rightSpeedValue)) {
+    sendJson(400, "{\"ok\":false,\"error\":\"bad right_speed\"}");
+    return;
+  }
+
+  uint32_t durationMs = 0;
+  if (g_server.hasArg("duration_ms") && !parseDuration(g_server.arg("duration_ms"), &durationMs)) {
+    sendJson(400, "{\"ok\":false,\"error\":\"bad duration_ms\"}");
+    return;
+  }
 
   Command cmd{};
-  if (g_server.hasArg("command")) {
-    cmd = parseRawCommand(g_server.arg("command"));
-  } else if (g_server.hasArg("direction")) {
-    Motion motion = Motion::Stop;
-    if (!parseMotionToken(g_server.arg("direction"), &motion)) {
-      sendJson(400, "{\"ok\":false,\"error\":\"bad direction\"}");
-      return;
-    }
-    cmd.motion = motion;
-    cmd.speed = g_defaultSpeed;
-    cmd.durationMs = 0;
-    cmd.valid = true;
-    if (motion != Motion::Stop && g_server.hasArg("duration_ms")) {
-      parseDuration(g_server.arg("duration_ms"), &cmd.durationMs);
-    }
-    if (g_server.hasArg("speed")) {
-      parseSpeed(g_server.arg("speed"), &cmd.speed);
-    }
-  } else {
-    sendJson(400, "{\"ok\":false,\"error\":\"missing direction or command\"}");
-    return;
-  }
-
-  if (!cmd.valid) {
-    sendJson(400, "{\"ok\":false,\"error\":\"bad command\"}");
-    return;
-  }
+  setWheelCommand(&cmd, leftSign, static_cast<uint8_t>(leftSpeedValue), rightSign,
+                  static_cast<uint8_t>(rightSpeedValue), durationMs);
 
   StyleParamResult styleParams{};
   if (!parseStyleParamsFromArgs(&styleParams)) {
@@ -1635,24 +1624,15 @@ void handleMove() {
 
   uint32_t holdMs = 0;
   if (g_server.hasArg("expression_hold_ms")) {
-    parseHoldMs(g_server.arg("expression_hold_ms"), &holdMs);
+    if (!parseHoldMs(g_server.arg("expression_hold_ms"), &holdMs)) {
+      sendJson(400, "{\"ok\":false,\"error\":\"bad expression_hold_ms\"}");
+      return;
+    }
   }
 
   applyCommand(cmd);
   applyExpressionFromRequest(styleParams, hasPreset, preset, holdMs, cmd.durationMs);
-
-  String json = "{\"ok\":true,\"motion\":\"";
-  json += motionName(cmd.motion);
-  json += "\",\"duration_ms\":";
-  json += String(cmd.durationMs);
-  json += ",\"speed\":";
-  json += String(cmd.speed);
-  json += ",\"expression\":\"";
-  json += g_eyePresetName;
-  json += "\",\"expression_last_action\":\"";
-  json += g_lastEyeAction;
-  json += "\"}";
-  sendJson(200, json);
+  sendJson(200, buildMovementResultJson(cmd));
 }
 
 void handleExpression() {
@@ -1721,88 +1701,6 @@ void handleExpressionParam() {
   json += String(holdMs);
   json += "}";
   sendJson(200, json);
-}
-
-void handleStop() {
-  if (!isAuthorized()) {
-    sendJson(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
-    return;
-  }
-  Command stop{};
-  stop.motion = Motion::Stop;
-  stop.durationMs = 0;
-  stop.speed = g_defaultSpeed;
-  stop.valid = true;
-  applyCommand(stop);
-  sendJson(200, "{\"ok\":true,\"motion\":\"STOP\"}");
-}
-
-void handleSpeed() {
-  if (!isAuthorized()) {
-    sendJson(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
-    return;
-  }
-  if (!g_server.hasArg("speed")) {
-    sendJson(400, "{\"ok\":false,\"error\":\"missing speed\"}");
-    return;
-  }
-  uint8_t speed = g_defaultSpeed;
-  if (!parseSpeed(g_server.arg("speed"), &speed)) {
-    sendJson(400, "{\"ok\":false,\"error\":\"bad speed\"}");
-    return;
-  }
-  g_defaultSpeed = speed;
-  String json = "{\"ok\":true,\"speed\":";
-  json += String(g_defaultSpeed);
-  json += "}";
-  sendJson(200, json);
-}
-
-void handleRaw() {
-  if (!isAuthorized()) {
-    sendJson(401, "{\"ok\":false,\"error\":\"unauthorized\"}");
-    return;
-  }
-  if (!g_server.hasArg("command")) {
-    sendJson(400, "{\"ok\":false,\"error\":\"missing command\"}");
-    return;
-  }
-
-  String raw = g_server.arg("command");
-  raw.trim();
-
-  if (raw.startsWith("EXPR ") || raw.startsWith("EXPRESSION ")) {
-    const int idx = raw.indexOf(' ');
-    PresetResolveResult preset{};
-    if (!resolvePreset(raw.substring(idx + 1), &preset)) {
-      sendJson(400, "{\"ok\":false,\"error\":\"bad expression\"}");
-      return;
-    }
-    StyleParamResult none{};
-    applyExpressionFromRequest(none, true, preset, 0, 0);
-    sendJson(200, "{\"ok\":true}");
-    return;
-  }
-
-  if (raw.startsWith("ACTION ")) {
-    const int idx = raw.indexOf(' ');
-    EyeAction action = EyeAction::None;
-    if (!parseActionToken(raw.substring(idx + 1), &action)) {
-      sendJson(400, "{\"ok\":false,\"error\":\"bad action\"}");
-      return;
-    }
-    applyEyeAction(action);
-    sendJson(200, "{\"ok\":true}");
-    return;
-  }
-
-  Command cmd = parseRawCommand(raw);
-  if (!cmd.valid) {
-    sendJson(400, "{\"ok\":false,\"error\":\"bad command\"}");
-    return;
-  }
-  applyCommand(cmd);
-  sendJson(200, "{\"ok\":true}");
 }
 
 void handleNotFound() { sendJson(404, "{\"ok\":false,\"error\":\"not_found\"}"); }
@@ -1880,7 +1778,7 @@ void publishMqttRegister() {
   payload += g_mqttTopicCommand;
   payload += "\",\"mqtt_ack_topic\":\"";
   payload += g_mqttTopicAck;
-  payload += "\",\"features\":[\"move\",\"expression\",\"expression_param\",\"raw\",\"state\"]}";
+  payload += "\",\"features\":[\"move\",\"set_wheels\",\"expression\",\"expression_param\",\"state\"]}";
   publishMqtt(g_mqttTopicRegister, payload, true);
 }
 
@@ -1994,12 +1892,9 @@ void startHttpServer() {
   g_server.on("/health", HTTP_GET, handleHealth);
   g_server.on("/ping", HTTP_ANY, handlePing);
   g_server.on("/api/state", HTTP_ANY, handleState);
-  g_server.on("/api/move", HTTP_ANY, handleMove);
+  g_server.on("/api/wheels", HTTP_ANY, handleWheels);
   g_server.on("/api/expression", HTTP_ANY, handleExpression);
   g_server.on("/api/expression/param", HTTP_ANY, handleExpressionParam);
-  g_server.on("/api/stop", HTTP_ANY, handleStop);
-  g_server.on("/api/speed", HTTP_ANY, handleSpeed);
-  g_server.on("/api/raw", HTTP_ANY, handleRaw);
   g_server.onNotFound(handleNotFound);
   g_server.begin();
 }
@@ -2008,13 +1903,19 @@ void runSafetyStop() {
   const uint32_t now = millis();
   if (g_motionStopAtMs != 0 && static_cast<int32_t>(now - g_motionStopAtMs) >= 0) {
     g_motor.stop();
-    g_currentMotion = Motion::Stop;
+    g_currentLeftMotor = 0;
+    g_currentRightMotor = 0;
+    g_currentLeftSpeedPct = 0;
+    g_currentRightSpeedPct = 0;
     g_motionStopAtMs = 0;
   }
   if (robot::FAILSAFE_STOP_MS > 0 && g_lastCommandAtMs > 0 &&
       static_cast<int32_t>(now - g_lastCommandAtMs) >= static_cast<int32_t>(robot::FAILSAFE_STOP_MS)) {
     g_motor.stop();
-    g_currentMotion = Motion::Stop;
+    g_currentLeftMotor = 0;
+    g_currentRightMotor = 0;
+    g_currentLeftSpeedPct = 0;
+    g_currentRightSpeedPct = 0;
     g_lastCommandAtMs = now;
   }
 }
@@ -2081,13 +1982,10 @@ void setup() {
   Serial.println("  GET  /health");
   Serial.println("  ANY  /ping");
   Serial.println("  ANY  /api/state");
-  Serial.println("  ANY  /api/move?direction=FORWARD&duration_ms=800&speed=180&expression=HAPPY");
+  Serial.println("  ANY  /api/wheels?left_direction=FORWARD&left_speed=100&right_direction=FORWARD&right_speed=100");
   Serial.println("  ANY  /api/expression?name=CONFUSED");
   Serial.println(
       "  ANY  /api/expression/param?mood=ANGRY&position=NE&curiosity=1&hflicker_amp=2&action=BLINK");
-  Serial.println("  ANY  /api/stop");
-  Serial.println("  ANY  /api/speed?speed=200");
-  Serial.println("  ANY  /api/raw?command=EXPR%20HAPPY");
 }
 
 void loop() {

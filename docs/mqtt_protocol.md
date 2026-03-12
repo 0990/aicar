@@ -29,7 +29,7 @@ Topic 前缀默认是 `aicar`（可在固件和 MCP Server 同步修改）。
   "ip": "192.168.1.88",
   "mqtt_cmd_topic": "aicar/robots/car-001/cmd",
   "mqtt_ack_topic": "aicar/robots/car-001/ack",
-  "features": ["move", "expression", "expression_param", "raw", "state"]
+  "features": ["move", "set_wheels", "expression", "expression_param", "state"]
 }
 ```
 
@@ -40,11 +40,12 @@ Topic 前缀默认是 `aicar`（可在固件和 MCP Server 同步修改）。
 ```json
 {
   "req_id": "d52e9c91b8a94c7d",
-  "type": "MOVE",
+  "type": "SET_WHEELS",
   "args": {
-    "direction": "FORWARD",
-    "duration_ms": 1000,
-    "speed": 180,
+    "left_direction": "FORWARD",
+    "left_speed": 100,
+    "right_direction": "FORWARD",
+    "right_speed": 100,
     "expression": "HAPPY",
     "expression_hold_ms": 1000
   }
@@ -62,12 +63,10 @@ Topic 前缀默认是 `aicar`（可在固件和 MCP Server 同步修改）。
 - `PING`
 - `STATE`
 - `HEALTH`
+- `SET_WHEELS`
 - `MOVE`
 - `EXPRESSION`
 - `EXPRESSION_PARAM`
-- `STOP`
-- `SPEED`
-- `RAW`
 
 ## 4. 应答格式（robot -> mcp）
 
@@ -85,6 +84,12 @@ Topic 前缀默认是 `aicar`（可在固件和 MCP Server 同步修改）。
     "motion": "FORWARD",
     "duration_ms": 1000,
     "speed": 180,
+    "wheels": {
+      "left_direction": "FORWARD",
+      "left_speed": 100,
+      "right_direction": "FORWARD",
+      "right_speed": 100
+    },
     "expression": "HAPPY",
     "expression_last_action": "NONE"
   }
@@ -104,21 +109,34 @@ Topic 前缀默认是 `aicar`（可在固件和 MCP Server 同步修改）。
 
 ## 5. `args` 参数说明
 
-### 5.1 MOVE
+### 5.1 SET_WHEELS
 
-- `direction`: `FORWARD|BACKWARD|LEFT|RIGHT|STOP`
+- `left_direction`: `FORWARD|BACKWARD`
+- `left_speed`: `0..100`
+- `right_direction`: `FORWARD|BACKWARD`
+- `right_speed`: `0..100`
+- `duration_ms`: 可选 `1..10000`
+- `expression`: 可选预设表情
+- `expression_hold_ms`: 可选 `1..30000`
+- 可带 RoboEyes 参数（见 `EXPRESSION_PARAM`）
+
+### 5.2 MOVE
+
+兼容旧接口：
+
+- `direction`: `FORWARD|BACKWARD|LEFT|RIGHT`
 - `duration_ms`: 可选 `1..10000`
 - `speed`: 可选 `0..255`
 - `expression`: 可选预设表情
 - `expression_hold_ms`: 可选 `1..30000`
 - 可带 RoboEyes 参数（见 `EXPRESSION_PARAM`）
 
-### 5.2 EXPRESSION
+### 5.3 EXPRESSION
 
 - `name`: `NEUTRAL|HAPPY|SAD|ANGRY|SLEEPY|SURPRISED|LOOK_LEFT|LOOK_RIGHT|WINK_LEFT|WINK_RIGHT|BLINK|CONFUSED|LAUGH`
 - `hold_ms`: 可选 `1..30000`
 
-### 5.3 EXPRESSION_PARAM
+### 5.4 EXPRESSION_PARAM
 
 至少一个参数：
 
@@ -137,11 +155,3 @@ Topic 前缀默认是 `aicar`（可在固件和 MCP Server 同步修改）。
 - `vflicker_amp`: `0..30`
 - `action`: `NONE|BLINK|WINK_LEFT|WINK_RIGHT|CONFUSED|LAUGH|OPEN|CLOSE`
 - `hold_ms`: 可选 `1..30000`
-
-### 5.4 SPEED
-
-- `speed`: `0..255`
-
-### 5.5 RAW
-
-- `command`: 例如 `FORWARD 800 180`、`EXPR HAPPY`、`ACTION CONFUSED`

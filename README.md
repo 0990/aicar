@@ -1,13 +1,12 @@
 # AI 控制桌面机器人（ESP32-C3 + DRV8833 + RoboEyes + Go MCP + MQTT）
 
-当前主架构：
+当前支持两种 MCP 接入方式：
 
 1. MCP Client（Codex / Claude Desktop）接收自然语言。
-2. Go MCP Server 运行在公网，连接 MQTT Broker。
-3. 小车在内网启动后主动连接 MQTT 并自动注册。
-4. MCP Server 通过 MQTT 下发命令，小车执行后回 ACK。
+2. `mcp-server-mqtt-go` 通过 MQTT Broker 与小车通信。
+3. `mcp-server-http-go` 直接调用小车固件 HTTP 接口。
 
-说明：固件仍保留 HTTP 接口用于局域网调试，但 MCP 主通道已改为 MQTT。
+说明：两套 MCP server 复用同一组工具名，只是底层通道不同。
 
 ## 1. 项目结构
 
@@ -18,7 +17,12 @@ AICar/
 ├─ src/main.cpp
 ├─ docs/http_api.md
 ├─ docs/mqtt_protocol.md
-└─ mcp-server-go/
+├─ mcp-server-http-go/
+│  ├─ go.mod
+│  ├─ go.sum
+│  ├─ main.go
+│  └─ README.md
+└─ mcp-server-mqtt-go/
    ├─ go.mod
    ├─ go.sum
    └─ main.go
@@ -108,42 +112,55 @@ C:\Users\xujialong\.platformio\penv\Scripts\platformio.exe device monitor -b 115
 启动：
 
 ```bash
-cd mcp-server-go
+cd mcp-server-mqtt-go
 go mod tidy
 go run .
 ```
 
 默认会启动 `streamable-http` 服务，例如：`http://<公网域名或IP>:8080/mcp`。
 
-## 7. MCP 工具
+## 7. Go MCP Server（HTTP 直连）
 
-- `robot_list`（查看已注册机器人）
-- `robot_set_active`（设置默认机器人）
+环境变量：
+
+- `ROBOT_HTTP_BASE_URL`（例如 `http://192.168.1.88`）
+- `ROBOT_HTTP_TOKEN`（可选）
+- `MCP_TRANSPORT`（默认 `http`，可选 `stdio`）
+- `MCP_HTTP_ADDR`（默认 `:8082`）
+- `MCP_HTTP_ENDPOINT`（默认 `/mcp`）
+- `MCP_HTTP_BEARER_TOKEN`（可选）
+
+启动：
+
+```bash
+cd mcp-server-http-go
+go mod tidy
+go run .
+```
+
+这个版本直接请求小车固件 HTTP API，不经过 MQTT。
+
+## 8. MCP 工具
+
 - `robot_health`
 - `robot_state`
 - `robot_ping`
-- `robot_move`
+- `robot_set_wheels`
 - `robot_expression`
 - `robot_expression_param`
-- `robot_ai_behavior`
-- `robot_speed`
-- `robot_send_raw`
-- `robot_stop`
 
-## 8. 典型使用流程
+MQTT 版额外提供 `robot_list` 和 `robot_set_active`，HTTP 版没有多机器人管理。
 
-1. 启动小车，确认已注册：
-`robot_list()`
+## 9. 典型使用流程
 
-2. 选中目标机器人：
-`robot_set_active(robot_id="car-001")`
+1. 配置目标小车地址并启动 HTTP 版 MCP server。
 
-3. 下发动作与表情：
-`robot_move(direction="FORWARD", duration_ms=1000, expression="HAPPY", expression_hold_ms=1000)`
+2. 下发动作与表情：
+`robot_set_wheels(left_direction="FORWARD", left_speed=100, right_direction="FORWARD", right_speed=100)`
 
-4. 复杂表情控制：
+3. 复杂表情控制：
 `robot_expression_param(mood="ANGRY", position="W", curiosity=1, hflicker_amp=2, hold_ms=1800)`
 
-## 9. HTTP 调试接口（可选）
+## 10. HTTP 调试接口（可选）
 
 局域网调试时仍可直接调用固件 HTTP 接口，见 `docs/http_api.md`。

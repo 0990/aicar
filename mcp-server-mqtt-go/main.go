@@ -480,64 +480,13 @@ func normalizeExpression(raw string) (string, bool) {
 	}
 }
 
-func containsAny(text string, words ...string) bool {
-	for _, word := range words {
-		if strings.Contains(text, word) {
-			return true
-		}
-	}
-	return false
-}
-
-func directionFromText(text string) string {
-	raw := strings.TrimSpace(strings.ToLower(text))
-	switch {
-	case containsAny(raw, "stop", "halt", "停止", "停下", "刹车"):
-		return "STOP"
-	case containsAny(raw, "forward", "ahead", "前进", "向前"):
-		return "FORWARD"
-	case containsAny(raw, "backward", "reverse", "后退", "向后"):
-		return "BACKWARD"
-	case containsAny(raw, "left", "左转", "向左"):
-		return "LEFT"
-	case containsAny(raw, "right", "右转", "向右"):
-		return "RIGHT"
+func normalizeWheelDirection(raw string) (string, bool) {
+	v := strings.ToUpper(strings.TrimSpace(raw))
+	switch v {
+	case "FORWARD", "BACKWARD":
+		return v, true
 	default:
-		return ""
-	}
-}
-
-func expressionFromText(text string) string {
-	raw := strings.TrimSpace(strings.ToLower(text))
-	switch {
-	case containsAny(raw, "开心", "高兴", "happy", "smile"):
-		return "HAPPY"
-	case containsAny(raw, "难过", "伤心", "sad"):
-		return "SAD"
-	case containsAny(raw, "生气", "愤怒", "angry"):
-		return "ANGRY"
-	case containsAny(raw, "困", "累", "sleepy", "tired"):
-		return "SLEEPY"
-	case containsAny(raw, "惊讶", "惊喜", "surprise", "wow"):
-		return "SURPRISED"
-	case containsAny(raw, "看左", "向左看", "look left"):
-		return "LOOK_LEFT"
-	case containsAny(raw, "看右", "向右看", "look right"):
-		return "LOOK_RIGHT"
-	case containsAny(raw, "左眨眼", "wink left"):
-		return "WINK_LEFT"
-	case containsAny(raw, "右眨眼", "wink right"):
-		return "WINK_RIGHT"
-	case containsAny(raw, "疑惑", "confused"):
-		return "CONFUSED"
-	case containsAny(raw, "大笑", "笑", "laugh"):
-		return "LAUGH"
-	case containsAny(raw, "眨眼", "blink"):
-		return "BLINK"
-	case containsAny(raw, "平静", "normal", "neutral"):
-		return "NEUTRAL"
-	default:
-		return ""
+		return "", false
 	}
 }
 
@@ -743,66 +692,49 @@ func main() {
 	)
 
 	mcpServer.AddTool(
-		mcp.NewTool("robot_move",
-			mcp.WithDescription("Execute movement via MQTT, optionally with RoboEyes parameters"),
+		mcp.NewTool("robot_set_wheels",
+			mcp.WithDescription("Control left and right wheels independently. Use FORWARD/BACKWARD and speed 0..100. Speed 0 means the wheel stops turning. Example for moving forward: left_direction=FORWARD left_speed=100 right_direction=FORWARD right_speed=100."),
 			mcp.WithString("robot_id", mcp.Description("Optional target robot id")),
-			mcp.WithString("direction", mcp.Required(), mcp.Description("FORWARD/BACKWARD/LEFT/RIGHT/STOP")),
-			mcp.WithNumber("duration_ms", mcp.Description("Optional duration in milliseconds")),
-			mcp.WithNumber("speed", mcp.Description("Optional speed 0..255")),
-			mcp.WithString("expression", mcp.Description("Optional expression preset")),
-			mcp.WithNumber("expression_hold_ms", mcp.Description("Optional expression hold duration")),
-			mcp.WithString("mood", mcp.Description("DEFAULT/TIRED/ANGRY/HAPPY")),
-			mcp.WithString("position", mcp.Description("DEFAULT/N/NE/E/SE/S/SW/W/NW")),
-			mcp.WithNumber("curiosity", mcp.Description("0 or 1")),
-			mcp.WithNumber("sweat", mcp.Description("0 or 1")),
-			mcp.WithNumber("cyclops", mcp.Description("0 or 1")),
-			mcp.WithNumber("auto_blink", mcp.Description("0 or 1")),
-			mcp.WithNumber("auto_blink_interval", mcp.Description("1..30")),
-			mcp.WithNumber("auto_blink_variation", mcp.Description("0..30")),
-			mcp.WithNumber("idle", mcp.Description("0 or 1")),
-			mcp.WithNumber("idle_interval", mcp.Description("1..30")),
-			mcp.WithNumber("idle_variation", mcp.Description("0..30")),
-			mcp.WithNumber("hflicker_amp", mcp.Description("0..30")),
-			mcp.WithNumber("vflicker_amp", mcp.Description("0..30")),
-			mcp.WithString("action", mcp.Description("NONE/BLINK/WINK_LEFT/WINK_RIGHT/CONFUSED/LAUGH/OPEN/CLOSE")),
+			mcp.WithString("left_direction", mcp.Required(), mcp.Description("FORWARD or BACKWARD")),
+			mcp.WithNumber("left_speed", mcp.Required(), mcp.Description("0..100, 0 means stop")),
+			mcp.WithString("right_direction", mcp.Required(), mcp.Description("FORWARD or BACKWARD")),
+			mcp.WithNumber("right_speed", mcp.Required(), mcp.Description("0..100, 0 means stop")),
 		),
 		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			rawDirection, err := request.RequireString("direction")
+			leftDirectionRaw, err := request.RequireString("left_direction")
 			if err != nil {
-				return mcp.NewToolResultText("invalid direction: " + err.Error()), nil
+				return mcp.NewToolResultText("invalid left_direction: " + err.Error()), nil
 			}
-			direction := strings.ToUpper(strings.TrimSpace(rawDirection))
-			switch direction {
-			case "FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP":
-			default:
-				return mcp.NewToolResultText("direction must be FORWARD/BACKWARD/LEFT/RIGHT/STOP"), nil
+			rightDirectionRaw, err := request.RequireString("right_direction")
+			if err != nil {
+				return mcp.NewToolResultText("invalid right_direction: " + err.Error()), nil
 			}
 
 			args := request.GetArguments()
-			cmd := map[string]any{"direction": direction}
-			if duration, ok := intArg(args, "duration_ms"); ok && duration > 0 {
-				cmd["duration_ms"] = duration
+			leftDirection, ok := normalizeWheelDirection(leftDirectionRaw)
+			if !ok {
+				return mcp.NewToolResultText("left_direction must be FORWARD/BACKWARD"), nil
 			}
-			if speed, ok := intArg(args, "speed"); ok {
-				if speed < 0 || speed > 255 {
-					return mcp.NewToolResultText("speed must be 0..255"), nil
-				}
-				cmd["speed"] = speed
+			rightDirection, ok := normalizeWheelDirection(rightDirectionRaw)
+			if !ok {
+				return mcp.NewToolResultText("right_direction must be FORWARD/BACKWARD"), nil
 			}
-			if raw := maybeStringArg(args, "expression"); raw != "" {
-				expr, ok := normalizeExpression(raw)
-				if !ok {
-					return mcp.NewToolResultText("invalid expression"), nil
-				}
-				cmd["expression"] = expr
+			leftSpeed, ok := intArg(args, "left_speed")
+			if !ok || leftSpeed < 0 || leftSpeed > 100 {
+				return mcp.NewToolResultText("left_speed must be 0..100"), nil
 			}
-			if hold, ok := intArg(args, "expression_hold_ms"); ok && hold > 0 {
-				cmd["expression_hold_ms"] = hold
+			rightSpeed, ok := intArg(args, "right_speed")
+			if !ok || rightSpeed < 0 || rightSpeed > 100 {
+				return mcp.NewToolResultText("right_speed must be 0..100"), nil
 			}
-			if _, err := addExpressionArgs(cmd, args); err != nil {
-				return mcp.NewToolResultText("invalid expression params: " + err.Error()), nil
+
+			cmd := map[string]any{
+				"left_direction":  leftDirection,
+				"left_speed":      leftSpeed,
+				"right_direction": rightDirection,
+				"right_speed":     rightSpeed,
 			}
-			return mcp.NewToolResultText(callRobotCommand(bridge, args, "move", cmd)), nil
+			return mcp.NewToolResultText(callRobotCommand(bridge, args, "set_wheels", cmd)), nil
 		},
 	)
 
@@ -865,99 +797,6 @@ func main() {
 				cmd["hold_ms"] = hold
 			}
 			return mcp.NewToolResultText(callRobotCommand(bridge, args, "expression_param", cmd)), nil
-		},
-	)
-
-	mcpServer.AddTool(
-		mcp.NewTool("robot_ai_behavior",
-			mcp.WithDescription("Parse natural text in MCP and dispatch MQTT robot commands"),
-			mcp.WithString("robot_id", mcp.Description("Optional target robot id")),
-			mcp.WithString("text", mcp.Required(), mcp.Description("Natural behavior request")),
-			mcp.WithNumber("duration_ms", mcp.Description("Optional movement duration")),
-			mcp.WithNumber("speed", mcp.Description("Optional movement speed")),
-			mcp.WithNumber("expression_hold_ms", mcp.Description("Optional expression hold")),
-		),
-		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			text, err := request.RequireString("text")
-			if err != nil {
-				return mcp.NewToolResultText("invalid text: " + err.Error()), nil
-			}
-			args := request.GetArguments()
-			direction := directionFromText(text)
-			expression := expressionFromText(text)
-			if direction == "" && expression == "" {
-				return mcp.NewToolResultText("no movement or expression found in text"), nil
-			}
-
-			if direction != "" {
-				cmd := map[string]any{"direction": direction}
-				if duration, ok := intArg(args, "duration_ms"); ok && duration > 0 {
-					cmd["duration_ms"] = duration
-				}
-				if speed, ok := intArg(args, "speed"); ok && speed >= 0 && speed <= 255 {
-					cmd["speed"] = speed
-				}
-				if expression != "" {
-					cmd["expression"] = expression
-					if hold, ok := intArg(args, "expression_hold_ms"); ok && hold > 0 {
-						cmd["expression_hold_ms"] = hold
-					}
-				}
-				return mcp.NewToolResultText(callRobotCommand(bridge, args, "move", cmd)), nil
-			}
-
-			cmd := map[string]any{"name": expression}
-			if hold, ok := intArg(args, "expression_hold_ms"); ok && hold > 0 {
-				cmd["hold_ms"] = hold
-			}
-			return mcp.NewToolResultText(callRobotCommand(bridge, args, "expression", cmd)), nil
-		},
-	)
-
-	mcpServer.AddTool(
-		mcp.NewTool("robot_speed",
-			mcp.WithDescription("Set default speed on robot"),
-			mcp.WithString("robot_id", mcp.Description("Optional target robot id")),
-			mcp.WithNumber("speed", mcp.Required(), mcp.Description("0..255")),
-		),
-		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			args := request.GetArguments()
-			speed, ok := intArg(args, "speed")
-			if !ok {
-				return mcp.NewToolResultText("missing speed"), nil
-			}
-			if speed < 0 || speed > 255 {
-				return mcp.NewToolResultText("speed must be 0..255"), nil
-			}
-			cmd := map[string]any{"speed": speed}
-			return mcp.NewToolResultText(callRobotCommand(bridge, args, "speed", cmd)), nil
-		},
-	)
-
-	mcpServer.AddTool(
-		mcp.NewTool("robot_send_raw",
-			mcp.WithDescription("Send raw command string to robot"),
-			mcp.WithString("robot_id", mcp.Description("Optional target robot id")),
-			mcp.WithString("command", mcp.Required(), mcp.Description("FORWARD 800 180 or EXPR HAPPY")),
-		),
-		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			command, err := request.RequireString("command")
-			if err != nil {
-				return mcp.NewToolResultText("invalid command: " + err.Error()), nil
-			}
-			args := request.GetArguments()
-			cmd := map[string]any{"command": strings.TrimSpace(command)}
-			return mcp.NewToolResultText(callRobotCommand(bridge, args, "raw", cmd)), nil
-		},
-	)
-
-	mcpServer.AddTool(
-		mcp.NewTool("robot_stop",
-			mcp.WithDescription("Emergency stop"),
-			mcp.WithString("robot_id", mcp.Description("Optional target robot id")),
-		),
-		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return mcp.NewToolResultText(callRobotCommand(bridge, request.GetArguments(), "stop", nil)), nil
 		},
 	)
 
